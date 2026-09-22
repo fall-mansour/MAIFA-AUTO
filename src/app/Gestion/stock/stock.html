@@ -1,0 +1,520 @@
+<!-- ================= BARRE HAUTE ================= -->
+<header class="entete">
+  <img src="/assets/logo-horizontal.png" alt="MAIFA-AUTO" class="logo" />
+
+  <div class="entete__title">
+    <h1>Stock</h1>
+    <p>
+      {{ pieces.length }} référence{{ pieces.length > 1 ? 's' : '' }} enregistrée{{
+        pieces.length > 1 ? 's' : ''
+      }}
+    </p>
+  </div>
+
+  <div class="search">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+    <input
+      type="search"
+      placeholder="Rechercher une référence, marque, modèle…"
+      [(ngModel)]="searchText"
+    />
+  </div>
+
+  <a class="btn-add" routerLink="/ajoutpieces">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+    Ajouter une pièce
+  </a>
+</header>
+
+<div class="page">
+  <!-- ================= CHIFFRES CLÉS ================= -->
+  <section class="kpis">
+    <div class="kpi">
+      <span class="kpi__label">Références</span>
+      <strong class="kpi__value mono">{{ pieces.length }}</strong>
+    </div>
+    <div class="kpi">
+      <span class="kpi__label">Unités en stock</span>
+      <strong class="kpi__value mono">{{ totalUnites | number: '1.0-0' }}</strong>
+    </div>
+    <div class="kpi">
+      <span class="kpi__label">Valeur du stock</span>
+      <strong class="kpi__value mono"> {{ valeurStock | number: '1.0-0' }}<em>FCFA</em> </strong>
+    </div>
+    <div class="kpi" [class.kpi--alert]="nbAlertes > 0">
+      <span class="kpi__label">À réapprovisionner</span>
+      <strong class="kpi__value mono">{{ nbAlertes }}</strong>
+    </div>
+  </section>
+
+  <!-- Alerte : pièces absentes du catalogue client -->
+  <div class="banner" *ngIf="nbSansCompat > 0">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"
+      />
+    </svg>
+    <div>
+      <strong
+        >{{ nbSansCompat }} pièce{{ nbSansCompat > 1 ? 's' : '' }} sans véhicule compatible</strong
+      >
+      <span
+        >Elles n'apparaissent dans aucun catalogue client tant qu'un modèle ne leur est pas
+        rattaché.</span
+      >
+    </div>
+    <button type="button" (click)="onlySansCompat = true">Les afficher</button>
+  </div>
+
+  <!-- ================= FILTRES ================= -->
+  <section class="filters">
+    <div class="filters__row">
+      <div class="filters__field">
+        <label for="f-marque">Marque</label>
+        <select id="f-marque" [(ngModel)]="selectedMarque" (ngModelChange)="onMarqueChange($event)">
+          <option value="">Toutes les marques</option>
+          <option *ngFor="let m of marques" [value]="m.id">{{ m.nom }}</option>
+        </select>
+      </div>
+
+      <div class="filters__field">
+        <label for="f-modele">Modèle</label>
+        <select
+          id="f-modele"
+          [(ngModel)]="selectedModele"
+          [disabled]="!selectedMarque || chargementModeles"
+        >
+          <option value="">
+            {{ chargementModeles ? 'Chargement…' : 'Tous les modèles' }}
+          </option>
+          <option *ngFor="let mo of modelesDisponibles" [value]="mo.id">{{ mo.modele }}</option>
+        </select>
+      </div>
+
+      <div class="filters__field">
+        <label for="f-annee">Année</label>
+        <select id="f-annee" [(ngModel)]="selectedAnnee">
+          <option value="">Toutes les années</option>
+          <option *ngFor="let a of annees" [value]="a">{{ a }}</option>
+        </select>
+      </div>
+
+      <div class="filters__field">
+        <label for="f-cat">Catégorie</label>
+        <select id="f-cat" [(ngModel)]="selectedCategorie">
+          <option value="">Toutes les catégories</option>
+          <option *ngFor="let c of categories" [value]="c.slug">{{ c.nom }}</option>
+        </select>
+      </div>
+
+      <div class="filters__field">
+        <label for="f-tri">Trier par</label>
+        <select id="f-tri" [(ngModel)]="sortBy">
+          <option value="recent">Ajout récent</option>
+          <option value="stock">Stock croissant</option>
+          <option value="prix-asc">Prix croissant</option>
+          <option value="prix-desc">Prix décroissant</option>
+          <option value="marque">Marque</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="filters__row filters__row--tools">
+      <button
+        type="button"
+        class="toggle"
+        [class.is-on]="onlyAlerts"
+        (click)="onlyAlerts = !onlyAlerts"
+      >
+        Stock faible ou rupture
+      </button>
+
+      <button
+        type="button"
+        class="toggle"
+        [class.is-on]="onlySansCompat"
+        (click)="onlySansCompat = !onlySansCompat"
+      >
+        Sans véhicule rattaché
+      </button>
+
+      <button type="button" class="link-reset" *ngIf="hasFilters" (click)="resetFilters()">
+        Réinitialiser les filtres
+      </button>
+
+      <span class="filters__count">
+        {{ filteredPieces.length }} résultat{{ filteredPieces.length > 1 ? 's' : '' }}
+      </span>
+
+      <div class="viewswitch">
+        <button type="button" [class.is-active]="view === 'grid'" (click)="view = 'grid'">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="3" width="7" height="7" rx="1.5" />
+            <rect x="3" y="14" width="7" height="7" rx="1.5" />
+            <rect x="14" y="14" width="7" height="7" rx="1.5" />
+          </svg>
+          Grille
+        </button>
+        <button type="button" [class.is-active]="view === 'list'" (click)="view = 'list'">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+          Tableau
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= VUE GRILLE ================= -->
+  <div class="container" *ngIf="view === 'grid' && filteredPieces.length">
+    <article class="card" *ngFor="let piece of filteredPieces; trackBy: trackById">
+      <div class="card__media">
+        <img [src]="piece.img" [alt]="piece.description" />
+        <span class="badge badge--ref mono" *ngIf="piece.ref">{{ piece.ref }}</span>
+        <span class="badge badge--etat" *ngIf="piece.etat">{{ piece.etat }}</span>
+        <span class="badge badge--masque" *ngIf="piece.visible_catalogue === 0">Masquée</span>
+      </div>
+
+      <div class="card-body">
+        <h3>{{ piece.description }}</h3>
+
+        <!-- Véhicules compatibles -->
+        <div class="vehicules" *ngIf="piece.compatibilites?.length; else sansVehicule">
+          <span class="veh-chip" *ngFor="let c of piece.compatibilites.slice(0, 3)">
+            {{ c.marque }} {{ c.modele }}
+            <em *ngIf="c.annee_min">{{ c.annee_min }}</em>
+          </span>
+          <span class="veh-more" *ngIf="piece.compatibilites.length > 3">
+            +{{ piece.compatibilites.length - 3 }}
+          </span>
+        </div>
+        <ng-template #sansVehicule>
+          <div class="vehicules">
+            <span class="veh-chip veh-chip--warn">Aucun véhicule rattaché</span>
+          </div>
+        </ng-template>
+
+        <!-- Stock : ajustable directement -->
+        <div class="stockline" [ngClass]="'is-' + stockStatus(piece)">
+          <span class="dot"></span>
+          <span class="stockline__label">{{ stockLabel(piece) }}</span>
+
+          <div class="compteur" [class.is-encours]="estEnCours(piece)">
+            <button
+              type="button"
+              (click)="ajusterStock(piece, -1, $event)"
+              [disabled]="!piece.quantite || estEnCours(piece)"
+              aria-label="Retirer une unité"
+            >
+              −
+            </button>
+            <strong class="mono">{{ piece.quantite || 0 }}</strong>
+            <button
+              type="button"
+              (click)="ajusterStock(piece, 1, $event)"
+              [disabled]="estEnCours(piece)"
+              aria-label="Ajouter une unité"
+            >
+              +
+            </button>
+          </div>
+        </div>
+
+        <dl class="meta">
+          <div>
+            <dt>Catégorie</dt>
+            <dd>{{ piece.categorie || '—' }}</dd>
+          </div>
+          <div>
+            <dt>Référence OE</dt>
+            <dd class="mono">{{ piece.ref_oe || '—' }}</dd>
+          </div>
+          <div>
+            <dt>Fournisseur</dt>
+            <dd>{{ piece.fournisseur || '—' }}</dd>
+          </div>
+        </dl>
+
+        <div class="card__foot">
+          <div class="price mono">{{ piece.prix | number: '1.0-0' }}<em>FCFA</em></div>
+          <div class="card__actions">
+            <button type="button" class="btn-edit" (click)="ouvrirEdition(piece)">Modifier</button>
+            <button
+              type="button"
+              class="btn-poubelle"
+              (click)="supprimerPiece(piece._id || piece.id)"
+              title="Supprimer la pièce"
+              aria-label="Supprimer la pièce"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 6h18" />
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                <path d="M10 11v6M14 11v6" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </article>
+  </div>
+
+  <!-- ================= VUE TABLEAU ================= -->
+  <div class="table-wrap" *ngIf="view === 'list' && filteredPieces.length">
+    <table class="table">
+      <thead>
+        <tr>
+          <th class="th-img"></th>
+          <th>Référence</th>
+          <th>Désignation</th>
+          <th>Véhicules compatibles</th>
+          <th>État</th>
+          <th class="ta-right">Prix</th>
+          <th class="ta-right">Stock</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let piece of filteredPieces; trackBy: trackById">
+          <td class="th-img">
+            <img [src]="piece.img" [alt]="piece.description" />
+          </td>
+          <td class="mono cell-ref">
+            {{ piece.ref || '—' }}
+            <span class="cell-sub mono" *ngIf="piece.ref_oe">OE {{ piece.ref_oe }}</span>
+          </td>
+          <td>
+            <strong>{{ piece.description }}</strong>
+            <span class="cell-sub">{{ piece.categorie || 'Sans catégorie' }}</span>
+          </td>
+          <td>
+            <span *ngIf="piece.compatibilites?.length; else vide">
+              {{ piece.compatibilites[0].marque }} {{ piece.compatibilites[0].modele }}
+              <span class="cell-sub" *ngIf="piece.compatibilites.length > 1">
+                et {{ piece.compatibilites.length - 1 }} autre{{
+                  piece.compatibilites.length > 2 ? 's' : ''
+                }}
+              </span>
+            </span>
+            <ng-template #vide><span class="cell-warn">Non rattachée</span></ng-template>
+          </td>
+          <td>
+            <span class="tag" *ngIf="piece.etat">{{ piece.etat }}</span>
+          </td>
+          <td class="ta-right mono">{{ piece.prix | number: '1.0-0' }}</td>
+          <td class="ta-right">
+            <div
+              class="compteur compteur--table"
+              [ngClass]="'is-' + stockStatus(piece)"
+              [class.is-encours]="estEnCours(piece)"
+            >
+              <button
+                type="button"
+                (click)="ajusterStock(piece, -1, $event)"
+                [disabled]="!piece.quantite || estEnCours(piece)"
+                aria-label="Retirer une unité"
+              >
+                −
+              </button>
+              <strong class="mono">{{ piece.quantite || 0 }}</strong>
+              <button
+                type="button"
+                (click)="ajusterStock(piece, 1, $event)"
+                [disabled]="estEnCours(piece)"
+                aria-label="Ajouter une unité"
+              >
+                +
+              </button>
+            </div>
+          </td>
+          <td class="ta-right cell-actions">
+            <button type="button" class="btn-edit" (click)="ouvrirEdition(piece)">Modifier</button>
+            <button
+              type="button"
+              class="btn-poubelle"
+              (click)="supprimerPiece(piece._id || piece.id)"
+              title="Supprimer la pièce"
+              aria-label="Supprimer la pièce"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 6h18" />
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                <path d="M10 11v6M14 11v6" />
+              </svg>
+            </button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ================= ÉTAT VIDE ================= -->
+  <div class="empty" *ngIf="filteredPieces.length === 0">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+    <h3>{{ pieces.length ? 'Aucune pièce ne correspond aux filtres' : 'Le stock est vide' }}</h3>
+    <p *ngIf="pieces.length">Élargissez la recherche ou réinitialisez les filtres.</p>
+    <p *ngIf="!pieces.length">Ajoutez une première pièce pour la voir apparaître ici.</p>
+
+    <button
+      type="button"
+      class="btn-add"
+      *ngIf="pieces.length && hasFilters"
+      (click)="resetFilters()"
+    >
+      Réinitialiser les filtres
+    </button>
+    <a class="btn-add" routerLink="/ajoutpieces" *ngIf="!pieces.length">Ajouter une pièce</a>
+  </div>
+</div>
+
+<!-- ================= FENÊTRE D'ÉDITION ================= -->
+<div class="modale" *ngIf="edition" (click)="fermerEdition()">
+  <div
+    class="modale__boite"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="titre-edition"
+    (click)="$event.stopPropagation()"
+  >
+    <header class="modale__tete">
+      <div>
+        <h2 id="titre-edition">Modifier la pièce</h2>
+        <p class="mono" *ngIf="edition.ref">Réf. {{ edition.ref }}</p>
+      </div>
+      <button type="button" class="modale__fermer" (click)="fermerEdition()" aria-label="Fermer">
+        &times;
+      </button>
+    </header>
+
+    <form class="modale__corps" (ngSubmit)="enregistrerEdition()">
+      <div class="champ">
+        <label for="e-desc">Désignation</label>
+        <input
+          id="e-desc"
+          type="text"
+          [(ngModel)]="edition.description"
+          name="description"
+          required
+        />
+      </div>
+
+      <div class="grille-3">
+        <div class="champ">
+          <label for="e-prix">Prix</label>
+          <div class="avec-unite">
+            <input
+              id="e-prix"
+              type="number"
+              min="0"
+              step="500"
+              [(ngModel)]="edition.prix"
+              name="prix"
+            />
+            <span>FCFA</span>
+          </div>
+        </div>
+
+        <div class="champ">
+          <label for="e-qte">Quantité en stock</label>
+          <input
+            id="e-qte"
+            type="number"
+            min="0"
+            step="1"
+            [(ngModel)]="edition.quantite"
+            name="quantite"
+          />
+        </div>
+
+        <div class="champ">
+          <label for="e-seuil">Seuil d'alerte</label>
+          <input
+            id="e-seuil"
+            type="number"
+            min="0"
+            step="1"
+            [(ngModel)]="edition.seuil_alerte"
+            name="seuil_alerte"
+          />
+        </div>
+      </div>
+
+      <div class="champ">
+        <label>État</label>
+        <div class="segments">
+          <button
+            type="button"
+            *ngFor="let e of ETATS"
+            [class.is-active]="edition.etat === e"
+            (click)="edition.etat = e"
+          >
+            {{ e }}
+          </button>
+        </div>
+      </div>
+
+      <div class="grille-2">
+        <div class="champ">
+          <label for="e-ref">Référence interne</label>
+          <input id="e-ref" type="text" class="mono" [(ngModel)]="edition.ref" name="ref" />
+        </div>
+        <div class="champ">
+          <label for="e-oe">Référence OE</label>
+          <input id="e-oe" type="text" class="mono" [(ngModel)]="edition.ref_oe" name="ref_oe" />
+        </div>
+        <div class="champ">
+          <label for="e-four">Fournisseur</label>
+          <input id="e-four" type="text" [(ngModel)]="edition.fournisseur" name="fournisseur" />
+        </div>
+        <div class="champ">
+          <label for="e-equip">Équipementier</label>
+          <input
+            id="e-equip"
+            type="text"
+            [(ngModel)]="edition.equipementier"
+            name="equipementier"
+          />
+        </div>
+      </div>
+
+      <label class="bascule">
+        <input type="checkbox" [(ngModel)]="edition.visible_catalogue" name="visible_catalogue" />
+        <span class="bascule__piste"><span></span></span>
+        <span class="bascule__texte">
+          <b>Visible dans le catalogue</b>
+          <em>Décochez pour masquer la pièce aux clients sans la supprimer.</em>
+        </span>
+      </label>
+
+      <p class="modale__erreur" *ngIf="erreurEdition">{{ erreurEdition }}</p>
+
+      <footer class="modale__pied">
+        <button
+          type="button"
+          class="btn-annuler"
+          (click)="fermerEdition()"
+          [disabled]="enregistrement"
+        >
+          Annuler
+        </button>
+        <button type="submit" class="btn-add" [disabled]="enregistrement">
+          <span class="spin" *ngIf="enregistrement"></span>
+          {{ enregistrement ? 'Enregistrement…' : 'Enregistrer' }}
+        </button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<!-- ================= NOTIFICATION ================= -->
+<div class="notif" *ngIf="notification" [ngClass]="'is-' + notification.type" role="status">
+  {{ notification.texte }}
+</div>
