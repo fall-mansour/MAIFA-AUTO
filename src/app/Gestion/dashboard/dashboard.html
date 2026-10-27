@@ -10,7 +10,7 @@
   <nav class="entete__nav">
     <a routerLink="/stock" routerLinkActive="is-active">Stock</a>
 
-    <a routerLink="/commandes" routerLinkActive="is-active">
+    <a routerLink="/Commandes" routerLinkActive="is-active">
       Commandes
       <span class="nav-badge" *ngIf="stats && stats.commandes.en_attente > 0">
         {{ stats.commandes.en_attente }}
@@ -20,6 +20,11 @@
     <a routerLink="/ajoutpieces" class="btn-add">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
       Ajouter une pièce
+    </a>
+
+    <a routerLink="/suivi" class="btn-add">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+      Suivi
     </a>
   </nav>
 

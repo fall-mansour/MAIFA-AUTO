@@ -1,11 +1,18 @@
 // On importe la connexion à la base de données et la config Cloudinary
 const db = require('../db');
 const { supprimerImages } = require('../cloudinaryConfig');
+const journal = require('../services/journal.service');
 
 const SEUIL_DEFAUT = 3;
 
 /** Colonnes contenant les URLs Cloudinary */
 const COLONNES_IMAGES = ['img_principale', 'img1', 'img2', 'img3', 'img4'];
+
+/** Forme comparable d'une référence saisie : sans tirets, points ni espaces */
+const normaliserRef = (valeur) =>
+  String(valeur ?? '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
 
 /**
  * mysql2 renvoie les DECIMAL sous forme de chaîne ("45000.00").
@@ -13,6 +20,15 @@ const COLONNES_IMAGES = ['img_principale', 'img1', 'img2', 'img3', 'img4'];
  */
 const formatPiece = (row) => ({
   ...row,
+
+  // La référence affichée est désormais la référence interne
+  // ("MA-00042-N"), générée et immuable. L'ancienne colonne `ref`,
+  // saisie à la main, n'est plus exposée sous ce nom : le front
+  // continue de lire `piece.ref` sans rien changer.
+  ref: row.ref_interne || null,
+  ref_interne: row.ref_interne || null,
+  ref_oe: row.ref_oe || null,
+
   prix: row.prix !== null ? Number(row.prix) : null,
   quantite: row.quantite !== null ? Number(row.quantite) : 0,
   annee: row.annee !== null ? Number(row.annee) : null,
@@ -62,8 +78,18 @@ const attacherRelations = async (pieces) => {
 // ==========================================================
 exports.getAllPieces = async (req, res) => {
   try {
-    const { search, marque, id_marque, id_modele, categorie, annee, modele, alerte, sans_compat } =
-      req.query;
+    const {
+      search,
+      marque,
+      id_marque,
+      id_modele,
+      categorie,
+      annee,
+      modele,
+      alerte,
+      sans_compat,
+      brouillon,
+    } = req.query;
 
     let sql = `
       SELECT DISTINCT p.*
@@ -74,14 +100,19 @@ exports.getAllPieces = async (req, res) => {
       WHERE 1 = 1`;
     const params = [];
 
-    // Recherche libre : inclut les références croisées
+    // Recherche libre.
+    //
+    // Les colonnes normalisées rendent la saisie indifférente aux
+    // séparateurs : "MA-00042-N", "ma00042n" et "MA 00042 N"
+    // trouvent la même pièce, de même pour "0451.103318".
     if (search) {
       const like = `%${search}%`;
-      const norm = String(search)
-        .toUpperCase()
-        .replace(/[\s\-.]/g, '');
+      const norm = `%${normaliserRef(search)}%`;
+
       sql += ` AND (
-        p.ref LIKE ? OR p.ref_oe LIKE ? OR p.ref_normalisee LIKE ?
+        p.ref_interne LIKE ? OR p.ref_interne_norm LIKE ?
+        OR p.ref_oe LIKE ? OR p.ref_oe_norm LIKE ?
+        OR p.ref_normalisee LIKE ?
         OR p.description LIKE ? OR p.fournisseur LIKE ?
         OR ma.nom LIKE ? OR mo.modele LIKE ?
         OR EXISTS (
@@ -89,7 +120,7 @@ exports.getAllPieces = async (req, res) => {
           WHERE pr.id_piece = p.id AND pr.reference_norm LIKE ?
         )
       )`;
-      params.push(like, like, `%${norm}%`, like, like, like, like, `%${norm}%`);
+      params.push(like, norm, like, norm, norm, like, like, like, like, norm);
     }
 
     if (id_modele) {
@@ -130,6 +161,14 @@ exports.getAllPieces = async (req, res) => {
     // Pièces non rattachées au référentiel : à corriger
     if (sans_compat === '1' || sans_compat === 'true') {
       sql += ' AND pc.id IS NULL';
+    }
+
+    // Brouillons : pièces sans aucune photo, donc invisibles au
+    // catalogue. Après un import de 200 lignes dont la moitié sans
+    // adresse d'image, c'est le seul moyen de retrouver celles qui
+    // attendent une photo.
+    if (brouillon === '1' || brouillon === 'true') {
+      sql += ` AND ${COLONNES_IMAGES.map((c) => `p.${c} IS NULL`).join(' AND ')}`;
     }
 
     sql += ' ORDER BY p.date_ajout DESC, p.id DESC';
@@ -206,20 +245,24 @@ exports.getPieceById = async (req, res) => {
 
 // ==========================================================
 // 4. GET /api/stock/recherche-ref/:ref
-//    Cherche dans la référence interne ET les équivalences
+//    Cherche dans la référence interne, la référence constructeur
+//    et les équivalences, quelle que soit la forme saisie.
 // ==========================================================
 exports.chercherParReference = async (req, res) => {
   try {
-    const norm = String(req.params.ref)
-      .toUpperCase()
-      .replace(/[\s\-.]/g, '');
+    const norm = normaliserRef(req.params.ref);
+    if (!norm) return res.status(400).json({ message: 'Référence vide.' });
 
     const [rows] = await db.query(
       `SELECT DISTINCT p.*
        FROM pieces p
        LEFT JOIN piece_references pr ON pr.id_piece = p.id
-       WHERE p.ref_normalisee = ? OR pr.reference_norm = ?`,
-      [norm, norm],
+       WHERE p.ref_interne_norm = ?
+          OR p.ref_oe_norm = ?
+          OR p.ref_normalisee = ?
+          OR pr.reference_norm = ?
+       ORDER BY p.ref_interne_norm = ? DESC, p.id`,
+      [norm, norm, norm, norm, norm],
     );
 
     if (rows.length === 0) {
@@ -310,7 +353,8 @@ exports.deletePiece = async (req, res) => {
     const id = req.params.id;
 
     const [rows] = await db.query(
-      `SELECT id, ref, description, ${COLONNES_IMAGES.join(', ')} FROM pieces WHERE id = ?`,
+      `SELECT id, ref_interne, description, ${COLONNES_IMAGES.join(', ')}
+         FROM pieces WHERE id = ?`,
       [id],
     );
 
@@ -329,14 +373,14 @@ exports.deletePiece = async (req, res) => {
     const rapport = await supprimerImages(urls);
 
     console.log(
-      `🗑️ Pièce supprimée : ${piece.ref || 'sans référence'} (id ${piece.id}) — ` +
+      `🗑️ Pièce supprimée : ${piece.ref_interne || 'sans référence'} (id ${piece.id}) — ` +
         `images Cloudinary : ${rapport.supprimees}/${rapport.demandees}`,
     );
 
     res.status(200).json({
       message: 'La pièce a été supprimée avec succès !',
       id: piece.id,
-      ref: piece.ref,
+      ref: piece.ref_interne,
       images: rapport,
     });
   } catch (error) {
@@ -352,6 +396,13 @@ exports.deletePiece = async (req, res) => {
 //    Liste blanche des champs : tout ce qui n'y figure pas est
 //    ignore. Sans elle, n'importe quel champ envoye serait ecrit,
 //    y compris l'identifiant ou la date d'ajout.
+//
+//    Deux champs ont ete RETIRES de cette liste :
+//      equipementier  la colonne n'existe plus en base
+//      ref            remplacee par ref_interne, qui est generee
+//                     et ne se modifie jamais. Elle figure sur des
+//                     etiquettes et dans l'historique des commandes :
+//                     la changer rendrait ces traces fausses.
 // ==========================================================
 const ETATS = ['Neuf', 'Occasion', 'Reconditionné'];
 
@@ -384,11 +435,12 @@ const CHAMPS_MODIFIABLES = {
     return v;
   },
   fournisseur: (v) => String(v ?? '').trim() || null,
-  equipementier: (v) => String(v ?? '').trim() || null,
-  ref: (v) => String(v ?? '').trim() || null,
   ref_oe: (v) => String(v ?? '').trim() || null,
   visible_catalogue: (v) => (v === true || v === 1 || v === '1' || v === 'true' ? 1 : 0),
 };
+
+/** Champs que le front peut encore envoyer, mais qu'on ignore sans bruit */
+const CHAMPS_OBSOLETES = new Set(['equipementier', 'ref', 'ref_interne', 'marque', 'modele']);
 
 exports.majPiece = async (req, res) => {
   const { id } = req.params;
@@ -411,6 +463,23 @@ exports.majPiece = async (req, res) => {
       }
     }
 
+    // Une tentative de modifier la reference interne merite d'etre
+    // refusee franchement plutot qu'ignoree en silence : le
+    // gestionnaire croirait sa saisie enregistree.
+    if (req.body.ref_interne !== undefined) {
+      return res.status(400).json({
+        message: 'La référence interne est attribuée automatiquement et ne peut pas être modifiée.',
+        champ: 'ref_interne',
+      });
+    }
+
+    const ignores = Object.keys(req.body).filter(
+      (c) => CHAMPS_OBSOLETES.has(c) && c !== 'ref_interne',
+    );
+    if (ignores.length) {
+      console.warn(`Champs ignorés sur la pièce ${id} : ${ignores.join(', ')}`);
+    }
+
     if (colonnes.length === 0) {
       return res.status(400).json({ message: 'Aucun champ modifiable fourni.' });
     }
@@ -423,7 +492,7 @@ exports.majPiece = async (req, res) => {
     const [piece] = await attacherRelations(rows.map(formatPiece));
 
     console.log(
-      `✏️  Pièce ${piece.ref || piece.id} modifiée : ` +
+      `✏️  Pièce ${piece.ref_interne || piece.id} modifiée : ` +
         colonnes.map((c) => c.split('`')[1]).join(', '),
     );
 
@@ -437,5 +506,253 @@ exports.majPiece = async (req, res) => {
     }
     console.error('Erreur PATCH pièce:', error);
     res.status(500).json({ message: 'Erreur lors de la mise à jour', error: error.message });
+  }
+};
+
+// ==========================================================
+//  PHOTOS D'UNE PIÈCE EXISTANTE
+//
+//  L'import met à 0 le `visible_catalogue` des pièces arrivées
+//  sans photo : elles entrent au stock en brouillon, invisibles
+//  du client. Jusqu'ici rien ne savait refermer cet état. Une
+//  pièce entrée en brouillon y restait, puisque la liste blanche
+//  de `majPiece` ne contient aucune colonne image et qu'aucune
+//  route n'acceptait de fichier sur une pièce existante.
+//
+//  Ces deux routes ferment la boucle, et la referment toute
+//  seule : dès la première photo la pièce est publiée, dès la
+//  dernière retirée elle repasse en brouillon. Un gestionnaire
+//  qui photographie une pièce veut la vendre, pas cocher ensuite
+//  une case qu'il oubliera.
+// ==========================================================
+
+/** Supprime de Cloudinary des fichiers fraîchement téléversés */
+const retirerDeCloudinary = async (fichiers) => {
+  const urls = (fichiers || []).map((f) => f && f.path).filter(Boolean);
+  if (urls.length) await supprimerImages(urls);
+};
+
+/** Les fichiers reçus, que multer ait utilisé .array() ou .fields() */
+const fichiersRecus = (req) => {
+  if (Array.isArray(req.files)) return req.files;
+  if (req.files && Array.isArray(req.files.photos)) return req.files.photos;
+  if (req.file) return [req.file];
+  return [];
+};
+
+// ==========================================================
+// 9. POST /api/stock/:id/photos
+//    multipart, champ « photos », jusqu'à 5 fichiers
+// ==========================================================
+exports.ajouterPhotos = async (req, res) => {
+  const { id } = req.params;
+  const fichiers = fichiersRecus(req);
+
+  if (fichiers.length === 0) {
+    return res.status(400).json({ message: 'Aucune photo reçue.' });
+  }
+
+  const conn = await db.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    // FOR UPDATE : deux gestionnaires qui photographient la même
+    // pièce en même temps écriraient sinon dans le même emplacement,
+    // et la photo du premier serait perdue sans laisser de trace.
+    const [rows] = await conn.query(
+      `SELECT id, ref_interne, description, visible_catalogue, ${COLONNES_IMAGES.join(', ')}
+         FROM pieces WHERE id = ? FOR UPDATE`,
+      [id],
+    );
+
+    if (rows.length === 0) {
+      await conn.rollback();
+      await retirerDeCloudinary(fichiers);
+      return res.status(404).json({ message: 'Pièce non trouvée.' });
+    }
+
+    const piece = rows[0];
+    const occupees = COLONNES_IMAGES.filter((c) => piece[c]);
+    const libres = COLONNES_IMAGES.filter((c) => !piece[c]);
+
+    if (libres.length === 0) {
+      await conn.rollback();
+      await retirerDeCloudinary(fichiers);
+      return res.status(409).json({
+        message: 'Cette pièce porte déjà 5 photos. Retirez-en une avant d en ajouter.',
+      });
+    }
+
+    // Ce qui ne rentre pas est renvoyé à Cloudinary plutôt que
+    // conservé sans référence : une image orpheline se paie et ne
+    // sert à personne.
+    const retenus = fichiers.slice(0, libres.length);
+    const surplus = fichiers.slice(libres.length);
+
+    const maj = {};
+    retenus.forEach((f, i) => {
+      maj[libres[i]] = f.path;
+    });
+
+    // Première photo : la pièce sort du brouillon d'elle-même
+    const publication = occupees.length === 0 && Number(piece.visible_catalogue) !== 1;
+    if (publication) maj.visible_catalogue = 1;
+
+    const champs = Object.keys(maj);
+    await conn.query(
+      `UPDATE pieces SET ${champs.map((c) => `\`${c}\` = ?`).join(', ')} WHERE id = ?`,
+      [...champs.map((c) => maj[c]), id],
+    );
+
+    await journal.enregistrer(conn, req, {
+      action: publication ? 'piece_publiee' : 'piece_photos_ajoutees',
+      objet: { type: 'piece', id: Number(id), libelle: piece.ref_interne || `#${id}` },
+      avant: { photos: occupees.length, visible_catalogue: Number(piece.visible_catalogue) },
+      apres: {
+        photos: occupees.length + retenus.length,
+        visible_catalogue: publication ? 1 : Number(piece.visible_catalogue),
+      },
+    });
+
+    await conn.commit();
+
+    // Après le commit seulement : si la transaction avait échoué
+    // après coup, on aurait détruit des images encore référencées.
+    if (surplus.length) await retirerDeCloudinary(surplus);
+
+    const [apres] = await conn.query('SELECT * FROM pieces WHERE id = ?', [id]);
+    const [complete] = await attacherRelations(apres.map(formatPiece));
+
+    console.log(
+      `📷 ${retenus.length} photo(s) ajoutée(s) à ${piece.ref_interne || id}` +
+        (publication ? ' — pièce publiée au catalogue' : ''),
+    );
+
+    res.status(200).json({
+      message: publication
+        ? `${retenus.length} photo(s) ajoutée(s). La pièce est maintenant visible au catalogue.`
+        : `${retenus.length} photo(s) ajoutée(s).`,
+      ajoutees: retenus.length,
+      ignorees: surplus.length,
+      emplacements_restants: libres.length - retenus.length,
+      publiee: publication,
+      piece: complete,
+    });
+  } catch (error) {
+    await conn.rollback();
+    await retirerDeCloudinary(fichiers);
+    console.error('Erreur ajout photos:', error);
+    res.status(500).json({ message: "Erreur lors de l'ajout des photos", error: error.message });
+  } finally {
+    conn.release();
+  }
+};
+
+// ==========================================================
+// 10. DELETE /api/stock/:id/photos/:emplacement
+//     emplacement : « img_principale », « img1 »… ou 0 à 4
+// ==========================================================
+exports.supprimerPhoto = async (req, res) => {
+  const { id, emplacement } = req.params;
+
+  const colonne = COLONNES_IMAGES.includes(emplacement)
+    ? emplacement
+    : COLONNES_IMAGES[Number(emplacement)];
+
+  if (!colonne) {
+    return res.status(400).json({
+      message: `Emplacement inconnu. Valeurs admises : ${COLONNES_IMAGES.join(', ')} ou 0 à 4.`,
+    });
+  }
+
+  const conn = await db.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    const [rows] = await conn.query(
+      `SELECT id, ref_interne, visible_catalogue, ${COLONNES_IMAGES.join(', ')}
+         FROM pieces WHERE id = ? FOR UPDATE`,
+      [id],
+    );
+
+    if (rows.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ message: 'Pièce non trouvée.' });
+    }
+
+    const piece = rows[0];
+    const urlRetiree = piece[colonne];
+
+    if (!urlRetiree) {
+      await conn.rollback();
+      return res.status(404).json({ message: 'Aucune photo à cet emplacement.' });
+    }
+
+    // Compactage. Les emplacements ne sont pas interchangeables :
+    // `img_principale` est celle qu'affichent les cartes du
+    // catalogue. Retirer la principale sans faire remonter les
+    // suivantes laisserait une pièce illustrée avec une vignette
+    // vide. On réécrit donc les cinq colonnes dans l'ordre.
+    const restantes = COLONNES_IMAGES.filter((c) => c !== colonne)
+      .map((c) => piece[c])
+      .filter(Boolean);
+
+    const maj = {};
+    COLONNES_IMAGES.forEach((c, i) => {
+      maj[c] = restantes[i] ?? null;
+    });
+
+    // Plus aucune photo : retour au brouillon, symétrique de la
+    // publication automatique ci-dessus.
+    const retourBrouillon = restantes.length === 0 && Number(piece.visible_catalogue) === 1;
+    if (retourBrouillon) maj.visible_catalogue = 0;
+
+    const champs = Object.keys(maj);
+    await conn.query(
+      `UPDATE pieces SET ${champs.map((c) => `\`${c}\` = ?`).join(', ')} WHERE id = ?`,
+      [...champs.map((c) => maj[c]), id],
+    );
+
+    await journal.enregistrer(conn, req, {
+      action: 'piece_photo_retiree',
+      objet: { type: 'piece', id: Number(id), libelle: piece.ref_interne || `#${id}` },
+      avant: { photos: restantes.length + 1, visible_catalogue: Number(piece.visible_catalogue) },
+      apres: {
+        photos: restantes.length,
+        visible_catalogue: retourBrouillon ? 0 : Number(piece.visible_catalogue),
+      },
+    });
+
+    await conn.commit();
+
+    // Cloudinary après le commit, jamais avant : une suppression
+    // d'image est irréversible, une transaction ne l'est pas.
+    const rapport = await supprimerImages([urlRetiree]);
+
+    const [apres] = await conn.query('SELECT * FROM pieces WHERE id = ?', [id]);
+    const [complete] = await attacherRelations(apres.map(formatPiece));
+
+    console.log(
+      `🗑️  Photo retirée de ${piece.ref_interne || id}` +
+        (retourBrouillon ? ' — pièce repassée en brouillon' : ''),
+    );
+
+    res.status(200).json({
+      message: retourBrouillon
+        ? 'Photo retirée. Sans photo, la pièce repasse en brouillon et quitte le catalogue.'
+        : 'Photo retirée.',
+      restantes: restantes.length,
+      brouillon: retourBrouillon,
+      images: rapport,
+      piece: complete,
+    });
+  } catch (error) {
+    await conn.rollback();
+    console.error('Erreur suppression photo:', error);
+    res.status(500).json({ message: 'Erreur lors de la suppression', error: error.message });
+  } finally {
+    conn.release();
   }
 };

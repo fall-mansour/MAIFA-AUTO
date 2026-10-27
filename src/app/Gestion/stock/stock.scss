@@ -1622,3 +1622,748 @@ $r-lg: 20px;
     vertical-align: middle;
   }
 }
+
+// ============================================================
+//  ACTIONS DE L'EN-TÊTE
+//  Deux entrées côte à côte : l'ajout unitaire garde l'orange
+//  plein, l'ajout multiple reste en retrait. Un seul geste
+//  principal par page.
+// ============================================================
+.entete__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn-multi {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 12px 20px;
+  border: 1px solid $line-strong;
+  border-radius: 99px;
+  background: #fff;
+  color: $navy;
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease,
+    transform 0.18s ease;
+
+  svg {
+    width: 17px;
+    height: 17px;
+    flex-shrink: 0;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  &:hover {
+    border-color: $orange;
+    background: $orange-50;
+    color: $orange-800;
+    transform: translateY(-2px);
+  }
+}
+
+@media (max-width: 1100px) {
+  // Sur écran moyen, l'icône suffit : le libellé long passe
+  // devant la recherche sinon
+  .btn-multi {
+    padding: 12px 14px;
+
+    span {
+      display: none;
+    }
+  }
+}
+
+@media (max-width: 767px) {
+  // La recherche passe sur sa propre ligne, les boutons
+  // reprennent l'alignement à droite
+  .entete__actions {
+    margin-left: auto;
+  }
+
+  .btn-multi {
+    padding: 10px 13px;
+  }
+}
+
+// ============================================================
+//  BROUILLONS, PHOTOS ET VÉHICULES COMPATIBLES
+//
+//  Une pièce n'est trouvable par un client que si elle réunit
+//  trois conditions : au moins une photo, au moins un véhicule
+//  rattaché, et du stock. Les deux premières se règlent ici.
+// ============================================================
+
+// ---- Bandeau « pièces sans photo » -------------------------
+//
+// Volontairement BLEU, alors que le bandeau « sans véhicule »
+// est orange. Les deux cohabitent en haut de la page et un même
+// traitement les rendrait indiscernables : on lirait deux fois
+// la même alerte sans voir qu'elles portent sur deux manques
+// différents.
+.banner--photo {
+  background: $sky-soft;
+  border-color: $line-strong;
+
+  svg {
+    stroke: $navy-600;
+  }
+
+  div strong {
+    color: $navy-800;
+  }
+
+  button {
+    border-color: $line-strong;
+    color: $navy;
+
+    &:hover {
+      background: $navy;
+      border-color: $navy;
+      color: #fff;
+    }
+  }
+}
+
+// ---- Compteur sur la bascule « Sans photo » ----------------
+.toggle__compte {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: rgba($navy, 0.1);
+  font-size: 0.72rem;
+  font-weight: 800;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.toggle.is-on .toggle__compte {
+  background: rgba($orange, 0.22);
+}
+
+// ---- Badge « Sans photo » sur la vignette ------------------
+//
+// En bas à gauche, et non en haut : .badge pose « top: 10px »
+// sans valeur horizontale, le badge se serait donc superposé à
+// la référence. C'est la place de .badge--masque, et les deux
+// ne s'affichent jamais ensemble : une pièce sans photo est
+// signalée comme telle, pas comme masquée.
+.badge--brouillon {
+  top: auto;
+  bottom: 10px;
+  left: 10px;
+  background: $orange-700;
+  color: #fff;
+}
+
+// Vignette d'un brouillon : c'est le logo par défaut, on
+// l'estompe pour qu'il ne se lise pas comme une photo de la pièce
+.card__media.is-brouillon img,
+.th-img__btn.is-brouillon img {
+  opacity: 0.32;
+  filter: grayscale(1);
+}
+
+// ---- Bouton appareil photo sur la vignette -----------------
+.btn-photo {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border: 0;
+  border-radius: 99px;
+  background: rgba($navy-900, 0.78);
+  color: #fff;
+  font-family: inherit;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease;
+
+  svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  em {
+    font-size: 0.72rem;
+    font-weight: 800;
+    font-style: normal;
+    font-variant-numeric: tabular-nums;
+  }
+
+  // Texte bleu nuit sur orange, comme les autres boutons orange
+  // de la page : le blanc n'y atteint que 2.84:1
+  &:hover {
+    background: $orange;
+    color: $navy-900;
+  }
+}
+
+// ---- Vignette cliquable dans la vue tableau ----------------
+.th-img__btn {
+  position: relative;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  line-height: 0;
+
+  img {
+    display: block;
+    border-radius: $r-sm;
+  }
+
+  &:hover::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: $r-sm;
+    border: 2px solid $orange;
+  }
+}
+
+.th-img__badge {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  min-width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0 4px;
+  border-radius: 99px;
+  background: $navy;
+  color: #fff;
+  font-size: 0.64rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+// ---- Véhicules compatibles sur les cartes ------------------
+.vehicules {
+  align-items: center;
+}
+
+.veh-gerer {
+  display: inline-grid;
+  place-items: center;
+  width: 23px;
+  height: 23px;
+  padding: 0;
+  border: 1px dashed $line-strong;
+  border-radius: 50%;
+  background: none;
+  color: $mute;
+  cursor: pointer;
+  transition: all 0.18s ease;
+
+  svg {
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+  }
+
+  &:hover {
+    border-style: solid;
+    border-color: $orange;
+    background: $orange-50;
+    color: $orange-800;
+  }
+}
+
+// La puce « aucun véhicule » devient le bouton qui y remédie :
+// l'avertissement et l'action au même endroit
+.veh-chip--action {
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.18s ease;
+
+  svg {
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    align-self: center;
+  }
+
+  &:hover {
+    background: $orange-700;
+    color: #fff;
+  }
+}
+
+// ---- Cellule véhicules du tableau --------------------------
+.cell-veh {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: $r-sm;
+  transition: box-shadow 0.15s ease;
+
+  &:hover {
+    box-shadow: 0 0 0 6px $sky-soft;
+    background: $sky-soft;
+  }
+}
+
+// ============================================================
+//  SÉLECTEURS DANS LES FENÊTRES
+//
+//  .champ ne stylait que les input text et number. Les fenêtres
+//  photos et véhicules utilisent des <select>, qui seraient
+//  restés aux réglages par défaut du navigateur, sans rapport
+//  avec le reste de la page.
+// ============================================================
+.champ select {
+  width: 100%;
+  padding: 11px 36px 11px 14px;
+  border: 1px solid $line;
+  border-radius: $r-md;
+  background: $sky-soft;
+  color: $text;
+  font-family: inherit;
+  font-size: 0.94rem;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23435a76' d='M6 8L1.5 3.5h9z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 13px center;
+  transition: all 0.18s ease;
+
+  &:hover:not(:disabled) {
+    border-color: $line-strong;
+    background-color: #fff;
+  }
+
+  &:focus {
+    background-color: #fff;
+    border-color: $orange;
+    box-shadow: 0 0 0 4px rgba($orange, 0.15);
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+// Champ en lecture seule : la référence interne, affichée mais
+// jamais modifiable. $dim et non $mute, qui ne donne que 4.33:1
+// sur ce fond et passe sous le seuil AA.
+.champ input[readonly],
+.champ input:disabled {
+  background: #eef2f7;
+  color: $dim;
+  cursor: not-allowed;
+
+  &:hover {
+    border-color: $line;
+    background: #eef2f7;
+  }
+}
+
+// $mute et non $mute-light : ton en-tête le dit, $mute-light est
+// réservé aux bordures et aux icônes, il ne tient pas 4.5:1 en texte.
+.champ__aide {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: $mute;
+}
+
+// ============================================================
+//  PIED DES FENÊTRES SANS FORMULAIRE
+//
+//  Dans la fenêtre d'édition, .modale__pied vit DANS le <form
+//  class="modale__corps"> et hérite de son padding horizontal.
+//  Les fenêtres photos et véhicules le placent à côté du corps :
+//  sans cette règle, le bouton Fermer collerait au bord.
+// ============================================================
+.modale__boite > .modale__pied {
+  padding: 16px 24px 22px;
+}
+
+// ============================================================
+//  FENÊTRE DES PHOTOS
+// ============================================================
+.modale__boite--photos {
+  max-width: 640px;
+}
+
+// .modale__corps est une colonne flex avec gap 16 : les marges
+// de ses enfants s'ajouteraient à cet écart.
+.photos__note,
+.photos__grille,
+.photos__compte,
+.photos__aide,
+.photos__envoi,
+.veh__note,
+.veh__liste,
+.veh__compte,
+.veh__aide {
+  margin: 0;
+}
+
+.photos__note,
+.veh__note {
+  padding: 12px 15px;
+  border-radius: $r-md;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: $dim;
+}
+
+.photos__note {
+  background: $orange-50;
+  border: 1px solid rgba($orange, 0.4);
+}
+
+.veh__note {
+  background: rgba($red, 0.06);
+  border: 1px solid rgba($red, 0.25);
+}
+
+.photos__grille {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 10px;
+}
+
+.photos__item {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: $r-md;
+  overflow: hidden;
+  background: $sky-soft;
+  border: 1px solid $line;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  figcaption {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    padding: 4px 8px;
+    background: rgba($navy-900, 0.8);
+    color: #fff;
+    font-size: 0.64rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+}
+
+.photos__retirer,
+.veh__retirer {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all 0.15s ease;
+
+  svg {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.3;
+    stroke-linecap: round;
+  }
+
+  &:hover:not(:disabled) {
+    background: $red;
+    color: #fff;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.photos__retirer {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: rgba($navy-900, 0.78);
+  color: #fff;
+}
+
+.photos__compte,
+.veh__compte {
+  font-size: 0.86rem;
+  color: $mute;
+}
+
+.photos__ajout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.photos__bouton {
+  position: relative;
+  flex: 1 1 200px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 14px 18px;
+  border: 1px dashed $line-strong;
+  border-radius: $r-md;
+  background: #fff;
+  font-family: inherit;
+  font-size: 0.93rem;
+  font-weight: 700;
+  color: $navy;
+  cursor: pointer;
+  transition: all 0.18s ease;
+
+  // Le champ réel est invisible : c'est l'étiquette qu'on clique
+  input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  svg {
+    width: 19px;
+    height: 19px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  &:hover {
+    border-style: solid;
+    border-color: $orange;
+    background: $orange-50;
+    color: $orange-800;
+  }
+
+  &.is-off {
+    opacity: 0.55;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+}
+
+// Le geste au magasin : la pièce arrive, on la photographie
+.photos__bouton--camera {
+  border-style: solid;
+  border-color: $navy;
+  background: $navy;
+  color: #fff;
+
+  &:hover {
+    border-color: $navy-900;
+    background: $navy-900;
+    color: #fff;
+  }
+}
+
+.photos__aide,
+.veh__aide {
+  font-size: 0.8rem;
+  color: $mute;
+}
+
+.photos__envoi {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: $navy;
+}
+
+// ============================================================
+//  FENÊTRE DES VÉHICULES
+// ============================================================
+.modale__boite--vehicules {
+  max-width: 660px;
+}
+
+.veh__liste {
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+
+  li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: $sky-soft;
+    border: 1px solid $line;
+    border-radius: $r-md;
+  }
+}
+
+.veh__texte {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 10px;
+
+  strong {
+    font-size: 0.94rem;
+    font-weight: 700;
+    color: $navy-800;
+  }
+
+  span {
+    font-size: 0.82rem;
+    color: $mute;
+  }
+}
+
+.veh__retirer {
+  background: $sky;
+  color: $dim;
+}
+
+.veh__form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  padding: 16px;
+  border: 1px dashed $line-strong;
+  border-radius: $r-md;
+
+  // La motorisation est le dernier champ : seule sur une
+  // demi-ligne elle laisserait un trou, donc elle prend la largeur
+  > .champ:last-of-type {
+    grid-column: 1 / -1;
+  }
+}
+
+.veh__ajouter {
+  grid-column: 1 / -1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 12px 22px;
+  border: 0;
+  border-radius: 99px;
+  background: $navy;
+  color: #fff;
+  font-family: inherit;
+  font-size: 0.93rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.18s ease;
+
+  &:hover:not(:disabled) {
+    background: $navy-900;
+  }
+
+  &:disabled {
+    background: $line;
+    color: $mute;
+    cursor: not-allowed;
+  }
+
+  .spin {
+    border-color: rgba(#fff, 0.3);
+    border-top-color: #fff;
+  }
+}
+
+// ============================================================
+//  TÉLÉPHONE
+//  Même seuil que le reste du fichier, et non un seuil à part
+// ============================================================
+@media (max-width: 767px) {
+  .photos__grille {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .photos__ajout {
+    flex-direction: column;
+  }
+
+  // En colonne, flex-basis s'applique à la HAUTEUR : sans cette
+  // remise à zéro chaque bouton occuperait un tiers de l'écran
+  .photos__bouton {
+    flex: 0 0 auto;
+  }
+
+  // Au magasin, l'appareil photo passe devant le choix de fichiers
+  .photos__bouton--camera {
+    order: -1;
+  }
+
+  // Marque, modèle et motorisation en pleine largeur ; les deux
+  // années restent côte à côte, elles se lisent comme une plage
+  .veh__form {
+    padding: 14px;
+
+    > .champ:not(.champ--court) {
+      grid-column: 1 / -1;
+    }
+  }
+}

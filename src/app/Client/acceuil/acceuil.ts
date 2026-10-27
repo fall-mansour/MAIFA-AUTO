@@ -19,6 +19,7 @@ import { BoutonsFlottants } from '../../boutons-flottants';
 import { SessionService } from '../../session.service';
 import { PanierService } from '../../panier.service';
 import { environment } from '../../environnement';
+import { RechercheVinComponent, VehiculeVin } from './recherche-vin';
 
 interface Vehicule {
   id: number;
@@ -48,10 +49,21 @@ interface Famille {
   sous: SousCategorie[];
 }
 
+/** Onglets au-dessus du bloc de filtres */
+type OngletRecherche = 'vehicule' | 'vin';
+
 @Component({
   selector: 'app-acceuil',
   standalone: true,
-  imports: [FormsModule, CurrencyPipe, RouterLink, CommonModule, IconePiece, BoutonsFlottants],
+  imports: [
+    FormsModule,
+    CurrencyPipe,
+    RouterLink,
+    CommonModule,
+    IconePiece,
+    BoutonsFlottants,
+    RechercheVinComponent,
+  ],
   templateUrl: './acceuil.html',
   styleUrl: './acceuil.scss',
 })
@@ -77,6 +89,18 @@ export class Acceuil implements OnInit, AfterViewInit, OnDestroy {
   readonly LIMITE_SOUS_CAT = 5;
   private depliees = new Set<string>();
 
+  /**
+   * Annees proposees dans le filtre.
+   *
+   * Construites, et non ecrites en dur dans le gabarit : la liste
+   * figee s'arretait a 2020, alors que l'essentiel du parc
+   * senegalais est plus ancien. 1980 est aussi l'annee ou commence
+   * le codage du millesime dans le numero de chassis, donc aucune
+   * valeur decodable ne tombe hors de la liste.
+   */
+  readonly ANNEE_MIN = 1980;
+  annees: number[] = [];
+
   // Session et panier : signaux, donc pas de markForCheck necessaire
   session = inject(SessionService);
   panier = inject(PanierService);
@@ -92,8 +116,16 @@ export class Acceuil implements OnInit, AfterViewInit, OnDestroy {
   ) {}
 
   ngOnInit(): void {
+    this.construireAnnees();
     this.loadPieces();
     this.loadModeles();
+  }
+
+  private construireAnnees(): void {
+    // +1 : les millesimes sortent avant la fin de l'annee civile
+    const haut = new Date().getFullYear() + 1;
+    this.annees = [];
+    for (let a = haut; a >= this.ANNEE_MIN; a--) this.annees.push(a);
   }
 
   loadPieces(): void {
@@ -170,6 +202,124 @@ export class Acceuil implements OnInit, AfterViewInit, OnDestroy {
     this.menuOuvert = false;
     this.session.deconnecter();
     this.cdr.markForCheck();
+  }
+
+  // ==========================================================
+  //  RECHERCHE PAR NUMERO DE CHASSIS (VIN)
+  //
+  //  FONCTIONNALITE D'ESSAI. Tout ce bloc, l'import du composant
+  //  et sa ligne dans « imports » se retirent ensemble.
+  //
+  //  Le composant ne remplace pas les listes : il les pre-remplit.
+  //  Une fois le vehicule identifie, on revient sur l'onglet
+  //  vehicule pour que le client VOIE ce qui a ete rempli et
+  //  puisse corriger. Une recherche lancee en silence serait
+  //  incomprehensible le jour ou l'API se trompe.
+  // ==========================================================
+
+  ongletRecherche: OngletRecherche = 'vehicule';
+
+  changerOnglet(onglet: OngletRecherche): void {
+    this.ongletRecherche = onglet;
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Compare deux libelles sans tenir compte de la casse, des
+   * accents ni de la ponctuation.
+   *
+   * Indispensable ici : l'API renvoie « MERCEDES-BENZ » la ou le
+   * referentiel porte « Mercedes », et « LAND ROVER » la ou il
+   * porte « Land-Rover ».
+   */
+  private static cle(valeur: string): string {
+    return valeur
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+  }
+
+  /**
+   * Orthographes a essayer pour un meme vehicule.
+   *
+   * Un seul cas systematique, mais frequent a Dakar : l'API ecrit
+   * « C-Class » la ou le referentiel porte « CLASSE C ». Verifie
+   * sur les 99 modeles Mercedes du referentiel.
+   */
+  private static variantes(libelle: string): string[] {
+    const formes = [libelle];
+    const classe = libelle.match(/^([A-Za-z]{1,3})[\s-]?Class$/i);
+    if (classe) formes.push(`CLASSE ${classe[1]}`);
+    return formes;
+  }
+
+  /**
+   * Un libelle figure-t-il dans une liste, aux accents, a la casse
+   * et a la ponctuation pres ?
+   *
+   * La meme cle que le rapprochement ci-dessus : le referentiel
+   * ecrit « LAND ROVER » la ou une saisie ancienne porte
+   * « Land-Rover ».
+   */
+  private static contient(liste: unknown, valeur: string): boolean {
+    if (!Array.isArray(liste) || liste.length === 0) return false;
+    const c = Acceuil.cle(valeur);
+    if (!c) return false;
+    return liste.some((v) => typeof v === 'string' && Acceuil.cle(v) === c);
+  }
+
+  /** Cherche un libelle dans une liste : egalite d'abord, puis prefixe */
+  private rapprocher(cible: string, liste: string[]): string | null {
+    for (const forme of Acceuil.variantes(cible)) {
+      const c = Acceuil.cle(forme);
+      if (!c) continue;
+
+      const exact = liste.find((v) => Acceuil.cle(v) === c);
+      if (exact) return exact;
+
+      // Prefixe, mais a partir de 3 caracteres seulement : sinon
+      // « GT » rapprocherait n'importe quoi.
+      if (c.length < 3) continue;
+      const approche = liste.find((v) => {
+        const k = Acceuil.cle(v);
+        return k.length >= 3 && (k.startsWith(c) || c.startsWith(k));
+      });
+      if (approche) return approche;
+    }
+    return null;
+  }
+
+  /** Recoit le vehicule decode et pre-remplit les listes existantes */
+  vinTrouve(v: VehiculeVin): void {
+    if (v.marque) {
+      const marque = this.rapprocher(v.marque, this.marques);
+      if (marque) {
+        this.selectedMarque = marque;
+        // Remet modelesFiltr a jour et vide selectedModele
+        this.onMarqueChange();
+
+        // Le modele n'est tente qu'une fois la marque posee : la
+        // liste des modeles n'existe pas avant.
+        if (v.modele) {
+          const modele = this.rapprocher(v.modele, this.modelesFiltr);
+          if (modele) this.selectedModele = modele;
+        }
+      }
+    }
+
+    if (v.annee) {
+      // Garde-fou : un millesime absent de la liste laisserait le
+      // select vide tout en filtrant quand meme. Le client verrait
+      // zero resultat sans voir pourquoi.
+      if (!this.annees.includes(v.annee)) {
+        this.annees = [...this.annees, v.annee].sort((a, b) => b - a);
+      }
+      this.selectedAnnee = String(v.annee);
+    }
+
+    this.ongletRecherche = 'vehicule';
+    this.remonterAuxResultats();
   }
 
   // ==========================================================
@@ -280,13 +430,42 @@ export class Acceuil implements OnInit, AfterViewInit, OnDestroy {
         piece.modele?.toLowerCase().includes(search) ||
         piece.description?.toLowerCase().includes(search);
 
+      // ------------------------------------------------------
+      //  MARQUE ET MODELE : la compatibilite d'abord
+      //
+      //  Ce filtre ne comparait que `piece.marque`, la vieille
+      //  colonne de la table. Or l'import Excel ne l'ecrit pas et
+      //  la fenetre d'edition du stock ne la modifie pas : elle est
+      //  vide sur toute piece qui n'est pas passee par la page
+      //  « Nouvelle piece ».
+      //
+      //  Une piece importee ne remontait donc JAMAIS quand un
+      //  client choisissait une marque, alors que sa compatibilite
+      //  etait bien en base. Et une piece compatible avec douze
+      //  vehicules n'etait trouvable que sous le premier.
+      //
+      //  On interroge maintenant la liste complete que le serveur
+      //  envoie, en gardant l'ancienne colonne en repli pour le
+      //  stock historique.
+      // ------------------------------------------------------
+      //  Le `as any` suit la convention deja en place plus bas pour
+      //  `sous_categorie` : le serveur envoie ces champs, l'interface
+      //  Piecevente ne les declare pas encore. Tu peux les y ajouter
+      //  (marques_compatibles?: string[] et modeles_compatibles?:
+      //  string[]) et retirer les casts.
+      const compat = piece as any;
+
       const matchesMarque =
-        !this.selectedMarque || piece.marque?.toLowerCase() === this.selectedMarque.toLowerCase();
+        !this.selectedMarque ||
+        Acceuil.contient(compat.marques_compatibles, this.selectedMarque) ||
+        Acceuil.cle(piece.marque || '') === Acceuil.cle(this.selectedMarque);
 
       const matchesAnnee = !this.selectedAnnee || piece.annee?.toString() === this.selectedAnnee;
 
       const matchesModele =
-        !this.selectedModele || piece.modele?.toLowerCase() === this.selectedModele.toLowerCase();
+        !this.selectedModele ||
+        Acceuil.contient(compat.modeles_compatibles, this.selectedModele) ||
+        Acceuil.cle(piece.modele || '') === Acceuil.cle(this.selectedModele);
 
       const matchesCategorie =
         !this.selectedCategorie ||

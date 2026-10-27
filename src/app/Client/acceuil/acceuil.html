@@ -64,7 +64,7 @@
           <span>{{ session.utilisateur()?.mail }}</span>
         </div>
 
-        <a routerLink="/compte" (click)="menuOuvert = false">
+        <a routerLink="/profil" (click)="menuOuvert = false">
           <i class="fas fa-user-gear"></i> Mon profil
         </a>
 
@@ -105,7 +105,38 @@
 
 <!-- FILTRES -->
 <section class="filters-section">
-  <div class="filters-bar">
+  <!--
+    ONGLETS DE RECHERCHE
+    Le second onglet est une fonctionnalite d'essai : il se retire
+    avec le composant app-recherche-vin et le bloc correspondant
+    dans acceuil.ts.
+  -->
+  <div class="recherche-onglets" role="tablist" aria-label="Mode de recherche du véhicule">
+    <button
+      type="button"
+      role="tab"
+      [class.is-active]="ongletRecherche === 'vehicule'"
+      [attr.aria-selected]="ongletRecherche === 'vehicule'"
+      (click)="changerOnglet('vehicule')"
+    >
+      <i class="fas fa-car"></i>
+      Par véhicule
+    </button>
+
+    <button
+      type="button"
+      role="tab"
+      [class.is-active]="ongletRecherche === 'vin'"
+      [attr.aria-selected]="ongletRecherche === 'vin'"
+      (click)="changerOnglet('vin')"
+    >
+      <i class="fas fa-barcode"></i>
+      Par numéro de châssis
+      <em class="onglet-neuf">Nouveau</em>
+    </button>
+  </div>
+
+  <div class="filters-bar" *ngIf="ongletRecherche === 'vehicule'">
     <div class="filter-group">
       <label><i class="fas fa-car"></i> Marque</label>
       <select [(ngModel)]="selectedMarque" name="marque" (change)="onMarqueChange()">
@@ -124,11 +155,14 @@
 
     <div class="filter-group">
       <label><i class="fas fa-calendar-alt"></i> Année</label>
+      <!--
+        La liste vient du composant et non du gabarit : figee a
+        2020, elle rendait inaccessible la majeure partie du parc,
+        et un millesime decode par le chassis tombait hors liste.
+      -->
       <select [(ngModel)]="selectedAnnee" name="annee">
         <option value="">Toutes les Années</option>
-        <option *ngFor="let year of [2026, 2025, 2024, 2023, 2022, 2021, 2020]" [value]="year">
-          {{ year }}
-        </option>
+        <option *ngFor="let year of annees" [value]="year">{{ year }}</option>
       </select>
     </div>
 
@@ -149,6 +183,11 @@
         <option *ngFor="let c of categories" [value]="c.slug">{{ c.nom }} ({{ c.nb }})</option>
       </select>
     </div>
+  </div>
+
+  <!-- Recherche par numero de chassis (fonctionnalite d'essai) -->
+  <div class="filters-vin" *ngIf="ongletRecherche === 'vin'">
+    <app-recherche-vin (vehiculeTrouve)="vinTrouve($event)"></app-recherche-vin>
   </div>
 </section>
 

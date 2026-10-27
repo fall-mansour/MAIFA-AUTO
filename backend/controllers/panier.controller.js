@@ -1,6 +1,12 @@
+const crypto = require('crypto');
 const db = require('../db');
+const journal = require('../services/journal.service');
+const mailsCommande = require('../services/mails.commande');
 
 const MODES_PAIEMENT = ['livraison', 'wave', 'om'];
+
+/** Clé du lien de suivi envoyé au client. 24 caractères, non devinables. */
+const nouveauJetonSuivi = () => crypto.randomBytes(12).toString('hex');
 
 /** Chaîne vide -> NULL */
 const nn = (v) =>
@@ -24,7 +30,7 @@ exports.verifierPanier = async (req, res) => {
     }
 
     const [rows] = await db.query(
-      `SELECT id, description, ref, marque, modele, etat, prix, quantite,
+      `SELECT id, description, ref_interne, ref_oe, marque, modele, etat, prix, quantite,
               img_principale, visible_catalogue
        FROM pieces WHERE id IN (?)`,
       [ids],
@@ -55,7 +61,7 @@ exports.verifierPanier = async (req, res) => {
       return {
         id_piece: id,
         designation: p.description,
-        ref: p.ref,
+        ref: p.ref_interne,
         vehicule: [p.marque, p.modele].filter(Boolean).join(' '),
         etat: p.etat,
         img_principale: p.img_principale,
@@ -93,7 +99,15 @@ exports.verifierPanier = async (req, res) => {
 //  Le prix vient TOUJOURS de la base, jamais du navigateur.
 // ==========================================================
 exports.validerPanier = async (req, res) => {
-  const { articles, client, mode_paiement, id_user } = req.body;
+  const { articles, client, mode_paiement } = req.body;
+
+  // Le compte rattaché vient du JETON, jamais du corps de la requête.
+  //
+  // Lu depuis req.body, n'importe qui pouvait envoyer l'identifiant
+  // d'un autre client et rattacher sa commande à son compte. La route
+  // acceptant les invités (jetonFacultatif), la valeur reste nulle
+  // pour une commande sans compte.
+  const idUser = req.utilisateur?.id ?? null;
 
   // --- 1. Validations de forme ---
   if (!Array.isArray(articles) || articles.length === 0) {
@@ -107,7 +121,7 @@ exports.validerPanier = async (req, res) => {
   const mode = MODES_PAIEMENT.includes(mode_paiement) ? mode_paiement : 'livraison';
 
   // Le paiement en ligne exige un compte : il demande une traçabilité
-  if (mode !== 'livraison' && !id_user) {
+  if (mode !== 'livraison' && !idUser) {
     return res.status(403).json({
       message: 'Le paiement en ligne nécessite un compte. Choisissez le paiement à la livraison.',
     });
@@ -123,7 +137,7 @@ exports.validerPanier = async (req, res) => {
     // --- 2. Verrouillage des lignes le temps de la transaction ---
     // Empêche deux clients de commander la même pièce simultanément
     const [pieces] = await conn.query(
-      `SELECT id, description, ref, marque, modele, etat, prix, quantite,
+      `SELECT id, description, ref_interne, marque, modele, etat, prix, quantite,
               img_principale, visible_catalogue
        FROM pieces WHERE id IN (?) FOR UPDATE`,
       [ids],
@@ -170,7 +184,7 @@ exports.validerPanier = async (req, res) => {
         null, // id_commande, complété plus bas
         id,
         p.description,
-        p.ref,
+        p.ref_interne,
         [p.marque, p.modele].filter(Boolean).join(' ') || null,
         p.etat,
         p.img_principale,
@@ -190,13 +204,16 @@ exports.validerPanier = async (req, res) => {
     }
 
     // --- 4. Création de la commande ---
+    const jetonSuivi = nouveauJetonSuivi();
+
     const [resCmd] = await conn.query(
       `INSERT INTO commandes
-        (id_user, nom, prenom, telephone, email, adresse_livraison, commentaire,
+        (id_user, jeton_suivi, nom, prenom, telephone, email, adresse_livraison, commentaire,
          mode_paiement, total, nb_articles, stock_decremente)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       [
-        id_user || null,
+        idUser,
+        jetonSuivi,
         nn(client.nom),
         nn(client.prenom),
         nn(client.telephone),
@@ -302,9 +319,25 @@ exports.getCommande = async (req, res) => {
 //   - en_attente -> confirmee : décrémentation
 //   - confirmee/livree -> annulee : restitution
 //  Le drapeau stock_decremente garantit une seule opération.
+//
+//  C'est ici aussi que la commande est AFFECTÉE à son
+//  gestionnaire, et que l'action est INSCRITE AU JOURNAL. Les
+//  deux écritures se font dans la transaction : si le changement
+//  de statut échoue, la trace n'existe pas non plus, et
+//  réciproquement.
 // ==========================================================
+
+/** Action du journal correspondant à chaque statut visé */
+const ACTION_PAR_STATUT = {
+  confirmee: 'commande_confirmee',
+  expediee: 'commande_expediee',
+  annulee: 'commande_annulee',
+  livree: 'commande_livree',
+  en_attente: 'commande_rouverte',
+};
+
 exports.majStatut = async (req, res) => {
-  const STATUTS = ['en_attente', 'confirmee', 'livree', 'annulee'];
+  const STATUTS = ['en_attente', 'confirmee', 'expediee', 'livree', 'annulee'];
   const { statut } = req.body;
 
   if (!STATUTS.includes(statut)) {
@@ -317,7 +350,8 @@ exports.majStatut = async (req, res) => {
     await conn.beginTransaction();
 
     const [rows] = await conn.query(
-      'SELECT id, reference, statut, stock_decremente FROM commandes WHERE id = ? FOR UPDATE',
+      `SELECT id, reference, statut, stock_decremente, traite_par, total
+         FROM commandes WHERE id = ? FOR UPDATE`,
       [req.params.id],
     );
     if (rows.length === 0) {
@@ -338,6 +372,9 @@ exports.majStatut = async (req, res) => {
        WHERE ca.id_commande = ? AND ca.id_piece IS NOT NULL`,
       [commande.id],
     );
+
+    // Détail du mouvement de stock, pour le journal
+    const mouvements = [];
 
     // ---------- CONFIRMATION : on retire du stock ----------
     if (statut === 'confirmee' && !commande.stock_decremente) {
@@ -380,6 +417,13 @@ exports.majStatut = async (req, res) => {
             a.quantite,
             a.id_piece,
           ]);
+
+          const avant = Number(parId.get(a.id_piece)?.quantite) || 0;
+          mouvements.push({
+            piece: a.designation,
+            avant,
+            apres: avant - a.quantite,
+          });
         }
       }
 
@@ -389,23 +433,86 @@ exports.majStatut = async (req, res) => {
 
     // ---------- ANNULATION : on remet en stock ----------
     if (statut === 'annulee' && commande.stock_decremente) {
+      const ids = articles.map((a) => a.id_piece);
+      const parId = new Map();
+
+      if (ids.length > 0) {
+        const [pieces] = await conn.query(
+          'SELECT id, quantite FROM pieces WHERE id IN (?) FOR UPDATE',
+          [ids],
+        );
+        pieces.forEach((p) => parId.set(p.id, p));
+      }
+
       for (const a of articles) {
         await conn.query('UPDATE pieces SET quantite = quantite + ? WHERE id = ?', [
           a.quantite,
           a.id_piece,
         ]);
+
+        const avant = Number(parId.get(a.id_piece)?.quantite) || 0;
+        mouvements.push({
+          piece: a.designation,
+          avant,
+          apres: avant + a.quantite,
+        });
       }
+
       await conn.query('UPDATE commandes SET stock_decremente = 0 WHERE id = ?', [commande.id]);
       console.log(`↩️ ${commande.reference} annulée — ${articles.length} ligne(s) restituée(s)`);
     }
 
+    // ---------- AFFECTATION ----------
+    // Le premier qui confirme devient le responsable de la commande.
+    // Une intervention ultérieure d'un collègue figure au journal,
+    // mais ne change pas l'affectation : celui qui a confirmé est
+    // celui qui a vérifié le stock et appelé le client.
+    const premiereConfirmation = statut === 'confirmee' && !commande.traite_par;
+
+    if (premiereConfirmation && req.utilisateur?.id) {
+      await conn.query(
+        'UPDATE commandes SET traite_par = ?, date_traitement = NOW() WHERE id = ?',
+        [req.utilisateur.id, commande.id],
+      );
+    }
+
     await conn.query('UPDATE commandes SET statut = ? WHERE id = ?', [statut, commande.id]);
+
+    // ---------- JOURNAL ----------
+    // Dans la transaction : la trace et l'action partagent le même sort.
+    const action = ACTION_PAR_STATUT[statut] || 'commande_modifiee';
+
+    await journal.enregistrer(conn, req, {
+      action,
+      objet: { type: 'commande', id: commande.id, libelle: commande.reference },
+      avant: { statut: commande.statut, stock_decremente: !!commande.stock_decremente },
+      apres: {
+        statut,
+        stock_decremente: statut === 'confirmee' ? true : statut === 'annulee' ? false : undefined,
+      },
+      // Le résumé par défaut ne connaît pas « rouverte », et ne dirait
+      // rien du stock remué ni du montant. On l'écrit donc nous-mêmes.
+      resume: construireResume(req, statut, commande, mouvements),
+    });
+
     await conn.commit();
+
+    // ---------- COURRIEL AU CLIENT ----------
+    // APRÈS la validation, jamais pendant.
+    //
+    // C'est l'inverse de la règle du journal, et c'est voulu : si le
+    // serveur de messagerie est injoignable, la commande doit rester
+    // confirmée. Le changement de statut est acquis, le courriel est
+    // un supplément. On n'attend donc pas son issue pour répondre.
+    notifierClient(commande.id, statut).catch((e) =>
+      console.error('✉️  Notification client impossible :', e.message),
+    );
 
     res.status(200).json({
       message: 'Statut mis à jour.',
       statut,
       reference: commande.reference,
+      traite_par: premiereConfirmation ? (req.utilisateur?.id ?? null) : commande.traite_par,
     });
   } catch (error) {
     await conn.rollback();
@@ -416,6 +523,93 @@ exports.majStatut = async (req, res) => {
   }
 };
 
+// ----------------------------------------------------------
+//  NOTIFICATION DU CLIENT
+// ----------------------------------------------------------
+
+/** Colonne qui note la date d'envoi, pour chaque étape */
+const COLONNE_MAIL = {
+  confirmee: 'mail_confirmee_le',
+  expediee: 'mail_expediee_le',
+  livree: 'mail_livree_le',
+  annulee: 'mail_annulee_le',
+};
+
+/**
+ * Envoie au client le courriel correspondant à l'étape atteinte.
+ *
+ * Deux garde-fous :
+ *   la colonne de date empêche le double envoi, un gestionnaire
+ *   qui clique deux fois ne produit qu'un seul message ;
+ *   une commande sans adresse électronique est simplement ignorée,
+ *   ce n'est pas une erreur.
+ *
+ * Ne lève jamais : l'appelant a déjà répondu au gestionnaire.
+ */
+async function notifierClient(idCommande, statut) {
+  const colonne = COLONNE_MAIL[statut];
+  if (!colonne) return; // en_attente : rien à annoncer
+
+  const [[commande]] = await db.query(
+    `SELECT id, reference, jeton_suivi, nom, prenom, email, telephone,
+            adresse_livraison, mode_paiement, total, ${colonne} AS deja_envoye
+       FROM commandes WHERE id = ?`,
+    [idCommande],
+  );
+
+  if (!commande) return;
+  if (!commande.email) return;
+  if (commande.deja_envoye) {
+    console.log(`✉️  ${commande.reference} : courriel « ${statut} » déjà envoyé, ignoré.`);
+    return;
+  }
+
+  const [articles] = await db.query(
+    `SELECT designation, ref, vehicule, quantite, montant
+       FROM commande_articles WHERE id_commande = ? ORDER BY id`,
+    [idCommande],
+  );
+
+  const parti = await mailsCommande.envoyerSuivi(statut, {
+    ...commande,
+    total: Number(commande.total) || 0,
+    articles: articles.map((a) => ({ ...a, montant: Number(a.montant) || 0 })),
+  });
+
+  // La date n'est posée qu'en cas de succès : un échec réseau doit
+  // pouvoir être rattrapé par un nouveau clic.
+  if (parti) {
+    await db.query(`UPDATE commandes SET ${colonne} = NOW() WHERE id = ?`, [idCommande]);
+  }
+}
+
+/** Phrase lisible par le responsable, dans la page de suivi */
+function construireResume(req, statut, commande, mouvements) {
+  const auteur = journal.auteurDepuis(req).nom;
+  const montant = Number(commande.total || 0).toLocaleString('fr-FR');
+
+  const verbes = {
+    confirmee: 'a confirmé',
+    expediee: 'a expédié',
+    annulee: 'a annulé',
+    livree: 'a marqué comme livrée',
+    en_attente: 'a remis en attente',
+  };
+
+  let phrase = `${auteur} ${verbes[statut] || 'a modifié'} la commande ${commande.reference}`;
+
+  if (statut === 'confirmee' || statut === 'annulee') {
+    phrase += ` (${montant} FCFA`;
+    if (mouvements.length) {
+      const sens = statut === 'confirmee' ? 'déstockée' : 'restituée';
+      phrase += `, ${mouvements.length} ligne${mouvements.length > 1 ? 's' : ''} ${sens}`;
+    }
+    phrase += ')';
+  }
+
+  return phrase.slice(0, 255);
+}
+
 // ==========================================================
 //  GET /api/panier/commandes?statut=en_attente   (gestion)
 //  `stock_suffisant` prévient le gestionnaire avant qu'il ne
@@ -423,13 +617,14 @@ exports.majStatut = async (req, res) => {
 // ==========================================================
 exports.getCommandes = async (req, res) => {
   try {
-    const { statut } = req.query;
+    const { statut, traite_par } = req.query;
 
     let sql = `
       SELECT
         c.id, c.reference, c.statut, c.mode_paiement, c.total, c.nb_articles,
         c.date_commande, c.telephone, c.email, c.adresse_livraison, c.commentaire,
-        c.stock_decremente,
+        c.stock_decremente, c.traite_par, c.date_traitement,
+        CONCAT_WS(' ', g.prenom, g.nom) AS gestionnaire,
         CONCAT_WS(' ', c.prenom, c.nom) AS client,
         (c.id_user IS NOT NULL) AS avec_compte,
         NOT EXISTS (
@@ -439,12 +634,19 @@ exports.getCommandes = async (req, res) => {
             AND (p.id IS NULL OR p.quantite < ca.quantite)
         ) AS stock_suffisant
       FROM commandes c
+      LEFT JOIN users g ON g.id = c.traite_par
       WHERE 1 = 1`;
     const params = [];
 
     if (statut) {
       sql += ' AND c.statut = ?';
       params.push(statut);
+    }
+
+    // Permet à un gestionnaire de n'afficher que ses commandes
+    if (traite_par) {
+      sql += ' AND c.traite_par = ?';
+      params.push(traite_par);
     }
 
     sql +=
@@ -484,6 +686,7 @@ exports.getCommandes = async (req, res) => {
         avec_compte: !!Number(c.avec_compte),
         stock_suffisant: !!Number(c.stock_suffisant),
         stock_decremente: !!Number(c.stock_decremente),
+        gestionnaire: c.gestionnaire || null,
         articles: parCommande.get(c.id) || [],
       })),
     );

@@ -19,12 +19,14 @@ const connexionRoutes = require('./routes/connexion');
 const modelesRoutes = require('./routes/modeles');
 const demandeRoutes = require('./routes/demande');
 const pieceRoutes = require('./routes/Piece'); // fiche détaillée d'une pièce (singulier)
-
+const journalRoutes = require('./routes/journal');
 const PiecesRoutes = require('./routes/ajoutpieces');
 const StockRoutes = require('./routes/stock');
 const DashboardRoutes = require('./routes/dashboard');
 const paiementRoutes = require('./routes/Paiement');
 const panierRoutes = require('./routes/panier');
+const profilRoutes = require('./routes/profil');
+const importRoutes = require('./routes/import');
 
 // --- MIDDLEWARES ---
 // En production, restreindre aux domaines réels :
@@ -49,12 +51,16 @@ app.use('/api/modeles', modelesRoutes); // référentiel : marques, modèles, ca
 app.use('/api/demande', demandeRoutes);
 app.use('/api/piece', pieceRoutes); // ⚠️ SINGULIER : fiche détaillée
 app.use('/api/paiement', paiementRoutes);
+app.use('/api/profil', profilRoutes);
+app.use('/api/vin', require('./routes/vin'));
 
 // Partie Gestion (Admin)
 app.use('/api/pieces', PiecesRoutes); // ⚠️ PLURIEL : ajout de pièces
 app.use('/api/stock', StockRoutes);
 app.use('/api/dashboard', DashboardRoutes);
 app.use('/api/panier', panierRoutes);
+app.use('/api/import', importRoutes);
+app.use('/api/journal', journalRoutes);
 
 // Route de base
 app.get('/', (req, res) => {

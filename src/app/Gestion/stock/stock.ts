@@ -20,7 +20,17 @@ interface Categorie {
   slug: string;
 }
 
-/** Champs modifiables dans la fenetre d'edition */
+/**
+ * Champs modifiables dans la fenetre d'edition.
+ *
+ * `equipementier` en est RETIRE : la colonne n'existe plus en base,
+ * le serveur ignorait donc la valeur sans rien dire. Le gestionnaire
+ * remplissait un champ dans le vide.
+ *
+ * `ref` reste, mais en LECTURE SEULE. C'est la reference interne,
+ * generee et immuable : elle figure sur les etiquettes et dans
+ * l'historique des commandes. Le serveur la refuse de toute facon.
+ */
 interface EditionPiece {
   id: number;
   description: string;
@@ -29,10 +39,30 @@ interface EditionPiece {
   seuil_alerte: number;
   etat: string;
   fournisseur: string;
-  equipementier: string;
   ref: string;
   ref_oe: string;
   visible_catalogue: boolean;
+}
+
+/** Une photo deja en place, dans son emplacement */
+interface PhotoPosee {
+  colonne: string;
+  url: string;
+}
+
+/** Fenetre des photos d'une piece */
+interface EditionPhotos {
+  id: number;
+  ref: string;
+  description: string;
+  liste: PhotoPosee[];
+}
+
+/** Fenetre des vehicules compatibles d'une piece */
+interface EditionVehicules {
+  id: number;
+  ref: string;
+  description: string;
 }
 
 @Component({
@@ -53,6 +83,7 @@ export class Stock implements OnInit {
   selectedCategorie = '';
   onlyAlerts = false;
   onlySansCompat = false;
+  onlyBrouillons = false;
   sortBy: 'recent' | 'stock' | 'prix-asc' | 'prix-desc' | 'marque' = 'recent';
 
   view: 'grid' | 'list' = 'grid';
@@ -67,6 +98,10 @@ export class Stock implements OnInit {
   readonly SEUIL_DEFAUT = 3;
   readonly ETATS = ['Neuf', 'Occasion', 'Reconditionné'];
 
+  /** Les cinq emplacements d'image, dans l'ordre d'affichage */
+  readonly COLONNES_IMAGES = ['img_principale', 'img1', 'img2', 'img3', 'img4'];
+  private readonly TAILLE_MAX = 2 * 1024 * 1024; // 2 Mo, comme à l'ajout
+
   // --- Ajustement rapide du stock ---
   /** Pieces dont la quantite est en cours d'enregistrement */
   private enCours = new Set<number>();
@@ -75,6 +110,33 @@ export class Stock implements OnInit {
   edition: EditionPiece | null = null;
   enregistrement = false;
   erreurEdition: string | null = null;
+
+  // --- Fenetre des photos ---
+  photos: EditionPhotos | null = null;
+  envoiPhotos = false;
+  erreurPhotos: string | null = null;
+
+  // --- Fenetre des vehicules compatibles ---
+  vehicules: EditionVehicules | null = null;
+  envoiVehicule = false;
+  erreurVehicules: string | null = null;
+
+  /**
+   * Selection et liste de modeles PROPRES a la fenetre.
+   *
+   * Surtout pas `selectedMarque` et `modelesDisponibles`, qui
+   * appartiennent aux filtres de la page : rattacher un vehicule
+   * remettrait alors le stock a plat sous les yeux du gestionnaire.
+   */
+  vehSelection = {
+    id_marque: '',
+    id_modele: '',
+    annee_min: '',
+    annee_max: '',
+    motorisation: '',
+  };
+  vehModeles: Modele[] = [];
+  vehChargement = false;
 
   // --- Notification discrete ---
   notification: { texte: string; type: 'ok' | 'ko' } | null = null;
@@ -202,6 +264,327 @@ export class Stock implements OnInit {
   }
 
   // ==========================================================
+  //  PHOTOS
+  //
+  //  Une piece importee sans adresse d'image entre en brouillon :
+  //  elle est au stock mais invisible du client. Cette fenetre est
+  //  la seule facon de refermer cet etat, et elle le referme SEULE :
+  //  des la premiere photo le serveur republie la piece, des la
+  //  derniere retiree il la remet en brouillon. Rien a cocher.
+  // ==========================================================
+
+  /** Nombre de photos effectivement posees */
+  nbPhotos(piece: any): number {
+    return this.COLONNES_IMAGES.filter((c) => piece[c]).length;
+  }
+
+  /** Une piece sans aucune photo : au stock, hors catalogue */
+  estBrouillon(piece: any): boolean {
+    return this.nbPhotos(piece) === 0;
+  }
+
+  /**
+   * Masquee a la main, ce qui n'est pas la meme chose qu'un
+   * brouillon : la piece a des photos mais le gestionnaire a
+   * decoche sa visibilite. Les deux meritent un libelle different,
+   * sinon on cherche une photo manquante qui ne manque pas.
+   */
+  estMasquee(piece: any): boolean {
+    return Number(piece.visible_catalogue) === 0 && !this.estBrouillon(piece);
+  }
+
+  get nbBrouillons(): number {
+    return this.pieces.filter((p) => this.estBrouillon(p)).length;
+  }
+
+  ouvrirPhotos(piece: any, event?: Event): void {
+    event?.stopPropagation();
+    this.erreurPhotos = null;
+    this.photos = {
+      id: Number(piece.id),
+      ref: piece.ref || '',
+      description: piece.description || '',
+      liste: this.COLONNES_IMAGES.filter((c) => piece[c]).map((c) => ({
+        colonne: c,
+        url: piece[c],
+      })),
+    };
+  }
+
+  fermerPhotos(): void {
+    if (this.envoiPhotos) return;
+    this.photos = null;
+    this.erreurPhotos = null;
+  }
+
+  get placesLibres(): number {
+    return this.photos ? this.COLONNES_IMAGES.length - this.photos.liste.length : 0;
+  }
+
+  /** Remplace la piece dans la liste et reconstruit la fenetre */
+  private appliquerPiece(recue: any): void {
+    const piece = this.normaliser(recue);
+    const index = this.pieces.findIndex((p) => Number(p.id) === Number(piece.id));
+    if (index !== -1) this.pieces[index] = piece;
+
+    if (this.photos && Number(this.photos.id) === Number(piece.id)) {
+      this.photos.liste = this.COLONNES_IMAGES.filter((c) => piece[c]).map((c) => ({
+        colonne: c,
+        url: piece[c],
+      }));
+    }
+  }
+
+  onPhotosChoisies(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const fichiers = Array.from(input.files || []);
+    input.value = ''; // permet de rechoisir le meme fichier
+    if (fichiers.length) this.envoyerPhotos(fichiers);
+  }
+
+  private envoyerPhotos(fichiers: File[]): void {
+    if (!this.photos || this.envoiPhotos) return;
+
+    const libres = this.placesLibres;
+    if (libres === 0) {
+      this.erreurPhotos = 'Cette pièce porte déjà 5 photos. Retirez-en une d’abord.';
+      return;
+    }
+
+    // Tri cote client AVANT l'envoi : inutile de televerser un
+    // fichier que le serveur refusera, surtout depuis un telephone
+    // en 3G.
+    const valides: File[] = [];
+    for (const f of fichiers) {
+      if (!f.type.startsWith('image/')) {
+        this.erreurPhotos = `« ${f.name} » n’est pas une image.`;
+        return;
+      }
+      if (f.size > this.TAILLE_MAX) {
+        this.erreurPhotos = `« ${f.name} » dépasse 2 Mo.`;
+        return;
+      }
+      valides.push(f);
+    }
+
+    const retenus = valides.slice(0, libres);
+    const ignores = valides.length - retenus.length;
+
+    const corps = new FormData();
+    retenus.forEach((f) => corps.append('photos', f));
+
+    this.envoiPhotos = true;
+    this.erreurPhotos = null;
+    this.cdr.markForCheck();
+
+    this.http.post<any>(`${environment.apiUrl}/stock/${this.photos.id}/photos`, corps).subscribe({
+      next: (res) => {
+        this.appliquerPiece(res.piece);
+        this.envoiPhotos = false;
+
+        let texte = res.message;
+        if (ignores > 0) {
+          texte += ` ${ignores} fichier(s) non envoyé(s), faute de place.`;
+        }
+        this.notifier(texte, 'ok');
+        this.cdr.markForCheck();
+      },
+      error: (err) => {
+        this.envoiPhotos = false;
+        this.erreurPhotos = err.error?.message || 'Envoi impossible.';
+        this.cdr.markForCheck();
+      },
+    });
+  }
+
+  retirerPhoto(photo: PhotoPosee): void {
+    if (!this.photos || this.envoiPhotos) return;
+
+    const derniere = this.photos.liste.length === 1;
+    const question = derniere
+      ? 'C’est la dernière photo. La pièce repassera en brouillon et quittera le catalogue. Continuer ?'
+      : 'Retirer cette photo ?';
+    if (!confirm(question)) return;
+
+    this.envoiPhotos = true;
+    this.erreurPhotos = null;
+    this.cdr.markForCheck();
+
+    this.http
+      .delete<any>(`${environment.apiUrl}/stock/${this.photos.id}/photos/${photo.colonne}`)
+      .subscribe({
+        next: (res) => {
+          this.appliquerPiece(res.piece);
+          this.envoiPhotos = false;
+          this.notifier(res.message, 'ok');
+          this.cdr.markForCheck();
+        },
+        error: (err) => {
+          this.envoiPhotos = false;
+          this.erreurPhotos = err.error?.message || 'Suppression impossible.';
+          this.cdr.markForCheck();
+        },
+      });
+  }
+
+  // ==========================================================
+  //  VEHICULES COMPATIBLES
+  //
+  //  Symetrique des photos. Une piece sans vehicule rattache
+  //  n'apparait dans aucun catalogue client, puisque la requete
+  //  du catalogue fait une JOIN sur piece_compatibilite. Elle est
+  //  au stock et invendable.
+  //
+  //  Le serveur savait deja rattacher un vehicule, mais aucun
+  //  ecran ne le proposait : la page comptait les pieces non
+  //  rattachees et savait les filtrer, sans offrir d'y remedier.
+  // ==========================================================
+
+  /** La piece ouverte dans la fenetre, telle qu'elle est dans la liste */
+  get pieceVehicules(): any | null {
+    if (!this.vehicules) return null;
+    return this.pieces.find((p) => Number(p.id) === Number(this.vehicules!.id)) || null;
+  }
+
+  get listeVehicules(): any[] {
+    return this.pieceVehicules?.compatibilites || [];
+  }
+
+  ouvrirVehicules(piece: any, event?: Event): void {
+    event?.stopPropagation();
+    this.erreurVehicules = null;
+    this.vehSelection = {
+      id_marque: '',
+      id_modele: '',
+      annee_min: '',
+      annee_max: '',
+      motorisation: '',
+    };
+    this.vehModeles = [];
+    this.vehicules = {
+      id: Number(piece.id),
+      ref: piece.ref || '',
+      description: piece.description || '',
+    };
+  }
+
+  fermerVehicules(): void {
+    if (this.envoiVehicule) return;
+    this.vehicules = null;
+    this.erreurVehicules = null;
+  }
+
+  /** Le choix d'une marque recharge SES modeles, sans toucher aux filtres */
+  onVehMarqueChange(idMarque: string): void {
+    this.vehSelection.id_modele = '';
+    this.vehModeles = [];
+    if (!idMarque) return;
+
+    this.vehChargement = true;
+    this.http.get<Modele[]>(`${environment.apiUrl}/modeles/marques/${idMarque}/modeles`).subscribe({
+      next: (data) => {
+        this.vehModeles = data;
+        this.vehChargement = false;
+        this.cdr.markForCheck();
+      },
+      error: (err) => {
+        console.error('❌ Chargement des modèles :', err);
+        this.vehChargement = false;
+        this.cdr.markForCheck();
+      },
+    });
+  }
+
+  rattacherVehicule(): void {
+    if (!this.vehicules || this.envoiVehicule) return;
+
+    const s = this.vehSelection;
+    if (!s.id_modele) {
+      this.erreurVehicules = 'Choisissez un modèle.';
+      return;
+    }
+
+    const min = s.annee_min ? Number(s.annee_min) : null;
+    const max = s.annee_max ? Number(s.annee_max) : null;
+    if (min && max && min > max) {
+      this.erreurVehicules = "L'année de début doit précéder l'année de fin.";
+      return;
+    }
+
+    this.envoiVehicule = true;
+    this.erreurVehicules = null;
+    this.cdr.markForCheck();
+
+    const idPiece = this.vehicules.id;
+
+    this.http
+      .post<any>(`${environment.apiUrl}/pieces/${idPiece}/compatibilites`, {
+        id_modele: Number(s.id_modele),
+        annee_min: min,
+        annee_max: max,
+        motorisation: s.motorisation.trim() || null,
+      })
+      .subscribe({
+        next: (res) => {
+          const piece = this.pieces.find((p) => Number(p.id) === idPiece);
+          if (piece) {
+            piece.compatibilites = [...(piece.compatibilites || []), res.compatibilite];
+          }
+
+          // La marque reste choisie : on rattache souvent plusieurs
+          // modeles d'affilee, la meme plaquette allant sur toute
+          // une gamme.
+          this.vehSelection.id_modele = '';
+          this.vehSelection.motorisation = '';
+
+          this.envoiVehicule = false;
+          this.notifier(res.message, 'ok');
+          this.cdr.markForCheck();
+        },
+        error: (err) => {
+          this.envoiVehicule = false;
+          this.erreurVehicules = err.error?.message || 'Rattachement impossible.';
+          this.cdr.markForCheck();
+        },
+      });
+  }
+
+  detacherVehicule(compat: any): void {
+    if (!this.vehicules || this.envoiVehicule) return;
+
+    const derniere = this.listeVehicules.length === 1;
+    const question = derniere
+      ? 'C’est le dernier véhicule. La pièce quittera tous les catalogues clients. Continuer ?'
+      : `Retirer ${compat.marque} ${compat.modele} ?`;
+    if (!confirm(question)) return;
+
+    this.envoiVehicule = true;
+    this.erreurVehicules = null;
+    this.cdr.markForCheck();
+
+    const idPiece = this.vehicules.id;
+
+    this.http.delete<any>(`${environment.apiUrl}/pieces/compatibilites/${compat.id}`).subscribe({
+      next: (res) => {
+        const piece = this.pieces.find((p) => Number(p.id) === idPiece);
+        if (piece) {
+          piece.compatibilites = (piece.compatibilites || []).filter(
+            (c: any) => Number(c.id) !== Number(compat.id),
+          );
+        }
+        this.envoiVehicule = false;
+        this.notifier(res.message, 'ok');
+        this.cdr.markForCheck();
+      },
+      error: (err) => {
+        this.envoiVehicule = false;
+        this.erreurVehicules = err.error?.message || 'Suppression impossible.';
+        this.cdr.markForCheck();
+      },
+    });
+  }
+
+  // ==========================================================
   //  FENETRE D'EDITION
   // ==========================================================
 
@@ -216,7 +599,6 @@ export class Stock implements OnInit {
       seuil_alerte: Number(piece.seuil_alerte ?? this.SEUIL_DEFAUT),
       etat: piece.etat || 'Neuf',
       fournisseur: piece.fournisseur || '',
-      equipementier: piece.equipementier || '',
       ref: piece.ref || '',
       ref_oe: piece.ref_oe || '',
       visible_catalogue:
@@ -230,9 +612,19 @@ export class Stock implements OnInit {
     this.erreurEdition = null;
   }
 
-  /** Echap ferme la fenetre */
+  /** Echap ferme la fenetre ouverte */
   @HostListener('document:keydown.escape')
   surEchap(): void {
+    if (this.photos) {
+      this.fermerPhotos();
+      this.cdr.markForCheck();
+      return;
+    }
+    if (this.vehicules) {
+      this.fermerVehicules();
+      this.cdr.markForCheck();
+      return;
+    }
     if (this.edition) {
       this.fermerEdition();
       this.cdr.markForCheck();
@@ -268,6 +660,8 @@ export class Stock implements OnInit {
     this.erreurEdition = null;
     this.cdr.markForCheck();
 
+    // `ref` et `equipementier` ne sont plus envoyes : le serveur les
+    // ignorait en silence, ce qui faisait croire a un enregistrement.
     const charge = {
       description: e.description.trim(),
       prix: Number(e.prix),
@@ -275,8 +669,6 @@ export class Stock implements OnInit {
       seuil_alerte: Number(e.seuil_alerte),
       etat: e.etat,
       fournisseur: e.fournisseur,
-      equipementier: e.equipementier,
-      ref: e.ref,
       ref_oe: e.ref_oe,
       visible_catalogue: e.visible_catalogue,
     };
@@ -383,7 +775,8 @@ export class Stock implements OnInit {
       this.selectedAnnee ||
       this.selectedCategorie ||
       this.onlyAlerts ||
-      this.onlySansCompat
+      this.onlySansCompat ||
+      this.onlyBrouillons
     );
   }
 
@@ -395,6 +788,7 @@ export class Stock implements OnInit {
     this.selectedCategorie = '';
     this.onlyAlerts = false;
     this.onlySansCompat = false;
+    this.onlyBrouillons = false;
     this.modelesDisponibles = [];
   }
 
@@ -434,6 +828,8 @@ export class Stock implements OnInit {
 
       const matchesSansCompat = !this.onlySansCompat || compat.length === 0;
 
+      const matchesBrouillon = !this.onlyBrouillons || this.estBrouillon(piece);
+
       return (
         matchesSearch &&
         matchesMarque &&
@@ -441,7 +837,8 @@ export class Stock implements OnInit {
         matchesAnnee &&
         matchesCategorie &&
         matchesAlerte &&
-        matchesSansCompat
+        matchesSansCompat &&
+        matchesBrouillon
       );
     });
 

@@ -5,6 +5,9 @@ import { Ajoutpieces } from './Gestion/ajoutpieces/ajoutpieces';
 import { Dashboard } from './Gestion/dashboard/dashboard';
 import { Stock } from './Gestion/stock/stock';
 import { Commandes } from './Gestion/commandes/commandes';
+import { ImportComponent } from './Gestion/import/import';
+import { SuiviGestionnaireComponent } from './Gestion/suivigestionnaire/suivigestionnaire';
+import { responsableGuard } from './responsable.guard';
 
 // --- Espace client ---
 import { Acceuil } from './Client/acceuil/acceuil';
@@ -16,6 +19,7 @@ import { DemandeComponent } from './Client/demande/demande';
 import { PanierPage } from './Client/panier/panier';
 
 import { gestionnaireGuard } from './gestionnaire.guard';
+import { ProfilComponent } from './Client/profil/profil';
 
 export const routes: Routes = [
   // ==========================================================
@@ -51,6 +55,22 @@ export const routes: Routes = [
     title: 'Commandes — MAIFA-AUTO',
   },
 
+  {
+    path: 'Import',
+    component: ImportComponent,
+    canActivate: [gestionnaireGuard],
+    title: 'Import/Export — MAIFA-AUTO',
+  },
+
+  {
+    path: 'suivi',
+    loadComponent: () =>
+      import('./Gestion/suivigestionnaire/suivigestionnaire').then(
+        (m) => m.SuiviGestionnaireComponent,
+      ),
+    canActivate: [responsableGuard],
+  },
+
   // ==========================================================
   //  ESPACE CLIENT
   // ==========================================================
@@ -70,6 +90,7 @@ export const routes: Routes = [
   { path: 'compte', component: CompteComponent, title: 'Créer un compte — MAIFA-AUTO' },
   { path: 'password', component: PasswordComponent, title: 'Mot de passe — MAIFA-AUTO' },
   { path: 'demande', component: DemandeComponent, title: 'Demande de pièce — MAIFA-AUTO' },
+  { path: 'profil', component: ProfilComponent, title: 'Mon profil — MAIFA-AUTO' },
 
   // ==========================================================
   //  COMPATIBILITE DE CASSE

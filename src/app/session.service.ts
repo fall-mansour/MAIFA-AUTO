@@ -2,12 +2,15 @@ import { Injectable, PLATFORM_ID, computed, inject, signal } from '@angular/core
 import { isPlatformBrowser } from '@angular/common';
 import { Router } from '@angular/router';
 
+/** Hiérarchie : client < gestionnaire < responsable */
+export type Role = 'client' | 'gestionnaire' | 'responsable';
+
 export interface Utilisateur {
   id: number;
   nom: string;
   prenom: string;
   mail: string;
-  role: 'client' | 'gestionnaire';
+  role: Role;
   telephone?: string;
   adresse?: string;
   vehicule?: string;
@@ -19,6 +22,13 @@ interface SessionStockee {
   expiration: number; // millisecondes
   user: Utilisateur;
 }
+
+/**
+ * Pages qui exigent une session de gestion. Une session qui expire
+ * sur l'une d'elles renvoie vers la connexion ; ailleurs, on laisse
+ * l'utilisateur où il est.
+ */
+const PAGES_PROTEGEES = ['/Dashboard', '/stock', '/ajoutpieces', '/commandes', '/import', '/suivi'];
 
 /**
  * Session authentifiée par jeton signé côté serveur.
@@ -45,9 +55,26 @@ export class SessionService {
 
   readonly utilisateur = computed(() => this._session()?.user ?? null);
   readonly estConnecte = computed(() => this._session() !== null);
-  readonly estGestionnaire = computed(() => this._session()?.user.role === 'gestionnaire');
   readonly prenom = computed(() => this._session()?.user.prenom ?? '');
   readonly bientotExpiree = this._bientotExpiree.asReadonly();
+
+  readonly role = computed<Role | null>(() => this._session()?.user.role ?? null);
+
+  /**
+   * Accès à l'espace de gestion.
+   *
+   * Un responsable EST un gestionnaire : il voit le stock, les
+   * commandes et l'import comme les autres. Comparer strictement à
+   * 'gestionnaire' l'aurait exclu de son propre espace de gestion
+   * dès son passage au nouveau rôle.
+   */
+  readonly estGestionnaire = computed(() => {
+    const r = this._session()?.user.role;
+    return r === 'gestionnaire' || r === 'responsable';
+  });
+
+  /** Accès au suivi des gestionnaires. Strict, lui. */
+  readonly estResponsable = computed(() => this._session()?.user.role === 'responsable');
 
   /** Minutes restantes avant expiration, pour l'affichage */
   readonly minutesRestantes = computed(() => {
@@ -90,6 +117,71 @@ export class SessionService {
     }
   }
 
+  /**
+   * Met à jour le profil en session, sans toucher au jeton ni à son
+   * échéance. Appelée après modification depuis la page profil :
+   * l'en-tête du site affiche alors le nouveau nom immédiatement,
+   * sans attendre une reconnexion.
+   *
+   * Le rôle en est volontairement exclu : il est porté par le jeton
+   * signé, et le modifier ici donnerait des droits que le serveur
+   * refuserait de toute façon, en laissant croire le contraire.
+   */
+  majUtilisateur(partiel: Partial<Omit<Utilisateur, 'role' | 'id'>>): void {
+    const session = this._session();
+    if (!session) return;
+
+    const fusion: SessionStockee = {
+      ...session,
+      user: { ...session.user, ...partiel },
+    };
+
+    this._session.set(fusion);
+
+    if (this.navigateur) {
+      try {
+        localStorage.setItem(this.CLE, JSON.stringify(fusion));
+      } catch (e) {
+        // Stockage indisponible : la session en mémoire reste à jour
+        console.warn('Session non conservée :', e);
+      }
+    }
+  }
+
+  /**
+   * Prolonge la session d'un client actif.
+   *
+   * Le serveur renvoie un jeton frais dans l'en-tête X-Nouveau-Jeton
+   * dès que la moitié du quart d'heure est écoulée. L'intercepteur
+   * le repère et appelle cette méthode : l'utilisateur ne voit rien,
+   * sa session ne tombe que s'il cesse réellement d'agir.
+   *
+   * Les jetons de gestion ne sont jamais prolongés par le serveur :
+   * leurs deux heures sont fermes.
+   */
+  prolonger(token: string, expiration: number): void {
+    const session = this._session();
+    if (!session || !token || !expiration) return;
+
+    // Un en-tête rejoué ne doit pas raccourcir une session déjà
+    // prolongée par une requête plus récente.
+    if (expiration <= session.expiration) return;
+
+    const fusion: SessionStockee = { ...session, token, expiration };
+
+    this._session.set(fusion);
+    this._bientotExpiree.set(false);
+
+    if (this.navigateur) {
+      try {
+        localStorage.setItem(this.CLE, JSON.stringify(fusion));
+      } catch {
+        // Stockage indisponible : la session en mémoire reste à jour
+      }
+      this.programmerExpiration(expiration);
+    }
+  }
+
   /** @param expiree true si la déconnexion vient de l'échéance du jeton */
   deconnecter(expiree = false): void {
     this._session.set(null);
@@ -101,9 +193,7 @@ export class SessionService {
 
       if (expiree) {
         // On ne redirige que si la page en cours nécessitait une session
-        const protegee = ['/Dashboard', '/stock', '/ajoutpieces', '/commandes'].some((p) =>
-          this.router.url.startsWith(p),
-        );
+        const protegee = PAGES_PROTEGEES.some((p) => this.router.url.startsWith(p));
         if (protegee) this.router.navigate(['/login'], { queryParams: { expiree: 1 } });
       }
     }
